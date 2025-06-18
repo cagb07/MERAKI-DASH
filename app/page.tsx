@@ -18,7 +18,7 @@ import {
 import { AlertTriangle, CheckCircle, Info, RefreshCw, Download, Trash2, Wifi, Shield, Activity } from "lucide-react"
 import { toast } from "@/hooks/use-toast"
 import { ThemeToggle } from "@/components/theme-toggle"
-import { validateApiKey, getNetworks, getAlerts, getAllHistoryAlerts, generateTestAlerts } from "@/lib/meraki-api"
+import { validateApiKey, getNetworks, getAlerts, generateTestAlerts } from "@/lib/meraki-api"
 
 interface Alert {
   id: string
@@ -106,23 +106,51 @@ export default function MerakiDashboard() {
       console.log("🌐 Obteniendo redes...")
       const allNetworks: Network[] = []
       for (const org of organizations) {
-        const networksResult = await getNetworks(apiKey, org.id)
-        if (networksResult.success) {
-          const orgNetworks = networksResult.data.map((net) => ({
-            id: net.id,
-            name: net.name,
-            organizationId: net.organizationId,
-          }))
-          allNetworks.push(...orgNetworks)
-          console.log(`📡 Redes en ${org.name}: ${orgNetworks.length}`)
+        try {
+          const networksResult = await getNetworks(apiKey, org.id)
+          if (networksResult.success) {
+            const orgNetworks = networksResult.data.map((net) => ({
+              id: net.id,
+              name: net.name,
+              organizationId: net.organizationId,
+            }))
+            allNetworks.push(...orgNetworks)
+            console.log(`📡 Redes en ${org.name}: ${orgNetworks.length}`)
+          }
+        } catch (error) {
+          console.error(`❌ Error obteniendo redes de ${org.name}:`, error)
         }
       }
       console.log(`📡 Total redes: ${allNetworks.length}`)
       setNetworks(allNetworks)
 
-      // Obtener alertas de las últimas 24 horas inicialmente
-      console.log("🚨 Obteniendo alertas de las últimas 24 horas...")
-      const allAlerts: Alert[] = []
+      // Generar alertas de prueba inmediatamente para mostrar algo
+      console.log("🧪 Generando alertas de prueba para mostrar datos inmediatamente...")
+      const testAlerts = await generateTestAlerts(
+        organizations[0]?.id || "demo_org",
+        allNetworks.map((n) => n.id),
+      )
+      const initialAlerts = testAlerts.map((alert) => ({
+        id: alert.id,
+        type: alert.type,
+        severity: alert.severity,
+        message: alert.message,
+        timestamp: alert.timestamp,
+        networkId: alert.networkId,
+        networkName: alert.networkName,
+        deviceSerial: alert.deviceSerial,
+        status: alert.status,
+      }))
+
+      // Actualizar estado inmediatamente con datos de prueba
+      setAlerts(initialAlerts)
+      setUseTestData(true)
+      setIsConnected(true)
+      console.log(`✅ Mostrando ${initialAlerts.length} alertas de prueba iniciales`)
+
+      // Ahora intentar obtener alertas reales en segundo plano
+      console.log("🚨 Intentando obtener alertas reales en segundo plano...")
+      const realAlerts: Alert[] = []
       let hasRealAlerts = false
 
       for (const org of organizations) {
@@ -145,86 +173,59 @@ export default function MerakiDashboard() {
               deviceSerial: alert.deviceSerial || "N/A",
               status: alert.status,
             }))
-            allAlerts.push(...orgAlerts)
-            console.log(`✅ Alertas agregadas de ${org.name}: ${orgAlerts.length}`)
-            console.log(`📈 Total acumulado: ${allAlerts.length}`)
+            realAlerts.push(...orgAlerts)
+            console.log(`✅ Alertas reales agregadas de ${org.name}: ${orgAlerts.length}`)
           } else {
-            console.log(`❌ Sin alertas en ${org.name} - Generando datos de prueba para esta organización`)
-            // Generar alertas de prueba específicas para esta organización
-            const networkIds = allNetworks.filter((n) => n.organizationId === org.id).map((n) => n.id)
-            if (networkIds.length > 0) {
-              const testAlerts = await generateTestAlerts(org.id, networkIds)
-              allAlerts.push(
-                ...testAlerts.map((alert) => ({
-                  id: `${org.id}_${alert.id}`,
-                  type: alert.type,
-                  severity: alert.severity,
-                  message: `[${org.name}] ${alert.message}`,
-                  timestamp: alert.timestamp,
-                  networkId: alert.networkId,
-                  networkName: alert.networkName,
-                  deviceSerial: alert.deviceSerial,
-                  status: alert.status,
-                })),
-              )
-              setUseTestData(true)
-              console.log(`🧪 Alertas de prueba generadas para ${org.name}: ${testAlerts.length}`)
-            }
+            console.log(`❌ Sin alertas reales en ${org.name}`)
           }
         } catch (orgError) {
           console.error(`❌ Error obteniendo alertas de ${org.name}:`, orgError)
-          // Continuar con la siguiente organización
-          continue
         }
       }
 
-      // Si no hay alertas reales en ninguna organización, generar alertas de prueba generales
-      if (!hasRealAlerts && allAlerts.length === 0) {
-        console.log("🧪 Generando alertas de prueba generales...")
-        const networkIds = allNetworks.map((n) => n.id)
-        const testAlerts = await generateTestAlerts(organizations[0]?.id || "test_org", networkIds)
-        allAlerts.push(
-          ...testAlerts.map((alert) => ({
-            id: alert.id,
-            type: alert.type,
-            severity: alert.severity,
-            message: alert.message,
-            timestamp: alert.timestamp,
-            networkId: alert.networkId,
-            networkName: alert.networkName,
-            deviceSerial: alert.deviceSerial,
-            status: alert.status,
-          })),
-        )
-        setUseTestData(true)
-        console.log(`🧪 Alertas de prueba generadas: ${testAlerts.length}`)
-      } else if (allAlerts.length > 0) {
-        console.log(`✅ Total de alertas cargadas: ${allAlerts.length} (${hasRealAlerts ? "reales" : "mixtas"})`)
+      // Si encontramos alertas reales, reemplazar las de prueba
+      if (hasRealAlerts && realAlerts.length > 0) {
+        console.log(`🎯 Reemplazando con ${realAlerts.length} alertas reales`)
+        setAlerts(realAlerts)
+        setUseTestData(false)
+
+        toast({
+          title: "Alertas reales cargadas",
+          description: `Se encontraron ${realAlerts.length} alertas reales de las últimas 24 horas`,
+        })
+      } else {
+        console.log(`🧪 Manteniendo ${initialAlerts.length} alertas de prueba`)
+
+        toast({
+          title: "Conexión exitosa",
+          description: `Conectado a Meraki API. Mostrando ${initialAlerts.length} alertas de prueba (no se encontraron alertas reales)`,
+        })
       }
-
-      console.log(`🎯 Actualizando estado con ${allAlerts.length} alertas`)
-      console.log("📋 Alertas finales:", allAlerts)
-
-      // Actualizar estado
-      setAlerts(allAlerts)
-      setIsConnected(true)
-
-      // Verificar que el estado se actualizó
-      setTimeout(() => {
-        console.log("🔍 Verificación post-actualización:")
-        console.log("- alerts.length:", allAlerts.length)
-        console.log("- isConnected: true")
-      }, 100)
-
-      toast({
-        title: "Conexión exitosa",
-        description: `Conectado a Meraki API. Cargadas ${organizations.length} organizaciones, ${allNetworks.length} redes y ${allAlerts.length} alertas de las últimas 24 horas${useTestData ? " (datos de prueba)" : ""}.`,
-      })
     } catch (error) {
       console.error("❌ Error en conexión:", error)
+
+      // En caso de error, al menos mostrar datos de prueba
+      console.log("🧪 Generando alertas de prueba debido a error...")
+      const fallbackAlerts = await generateTestAlerts("error_org", ["error_network"])
+      const errorAlerts = fallbackAlerts.map((alert) => ({
+        id: alert.id,
+        type: alert.type,
+        severity: alert.severity,
+        message: `[ERROR] ${alert.message}`,
+        timestamp: alert.timestamp,
+        networkId: alert.networkId,
+        networkName: alert.networkName,
+        deviceSerial: alert.deviceSerial,
+        status: alert.status,
+      }))
+
+      setAlerts(errorAlerts)
+      setUseTestData(true)
+      setIsConnected(true)
+
       toast({
         title: "Error de conexión",
-        description: error instanceof Error ? error.message : "No se pudo conectar a Meraki API",
+        description: `${error instanceof Error ? error.message : "Error desconocido"}. Mostrando datos de prueba.`,
         variant: "destructive",
       })
     } finally {
@@ -279,8 +280,6 @@ export default function MerakiDashboard() {
           }
         } catch (orgError) {
           console.error(`❌ Error cargando más alertas de ${org.name}:`, orgError)
-          // Continuar con la siguiente organización
-          continue
         }
       }
 
@@ -364,6 +363,7 @@ export default function MerakiDashboard() {
     setSelectedSeverity("all")
     setSearchTerm("")
     setUseTestData(false)
+    setLoadedTimespan(86400)
     stopAutoRefresh()
     setLastAlertCount(0)
     toast({
@@ -387,29 +387,31 @@ export default function MerakiDashboard() {
 
       // Obtener alertas actualizadas de todas las organizaciones
       for (const org of organizations) {
-        const alertsResult = loadFullHistory
-          ? await getAllHistoryAlerts(apiKey, org.id)
-          : await getAlerts(apiKey, org.id, selectedTimespan)
+        try {
+          const alertsResult = await getAlerts(apiKey, org.id, loadedTimespan)
 
-        if (alertsResult.success && alertsResult.data.length > 0) {
-          hasRealAlerts = true
-          const orgAlerts = alertsResult.data.map((alert) => ({
-            id: alert.id,
-            type: alert.type,
-            severity: alert.severity,
-            message: alert.message,
-            timestamp: alert.timestamp,
-            networkId: alert.networkId,
-            networkName: alert.networkName,
-            deviceSerial: alert.deviceSerial || "N/A",
-            status: alert.status,
-          }))
-          allAlerts.push(...orgAlerts)
+          if (alertsResult.success && alertsResult.data.length > 0) {
+            hasRealAlerts = true
+            const orgAlerts = alertsResult.data.map((alert) => ({
+              id: alert.id,
+              type: alert.type,
+              severity: alert.severity,
+              message: alert.message,
+              timestamp: alert.timestamp,
+              networkId: alert.networkId,
+              networkName: alert.networkName,
+              deviceSerial: alert.deviceSerial || "N/A",
+              status: alert.status,
+            }))
+            allAlerts.push(...orgAlerts)
+          }
+        } catch (error) {
+          console.error(`Error refrescando alertas de ${org.name}:`, error)
         }
       }
 
       // Si no hay alertas reales, mantener las de prueba o generar nuevas
-      if (!hasRealAlerts && useTestData) {
+      if (!hasRealAlerts) {
         const networkIds = networks.map((n) => n.id)
         const testAlerts = await generateTestAlerts(organizations[0]?.id || "test_org", networkIds)
         allAlerts.push(
@@ -425,6 +427,9 @@ export default function MerakiDashboard() {
             status: alert.status,
           })),
         )
+        setUseTestData(true)
+      } else {
+        setUseTestData(false)
       }
 
       setAlerts(allAlerts)
@@ -516,6 +521,7 @@ export default function MerakiDashboard() {
 
   const clearAlerts = () => {
     setAlerts([])
+    setUseTestData(false)
     toast({
       title: "Alertas limpiadas",
       description: "Todas las alertas han sido eliminadas",
@@ -554,23 +560,27 @@ export default function MerakiDashboard() {
   }
 
   const playAlertSound = () => {
-    // Crear un sonido usando Web Audio API
-    const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)()
-    const oscillator = audioContext.createOscillator()
-    const gainNode = audioContext.createGain()
+    try {
+      // Crear un sonido usando Web Audio API
+      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)()
+      const oscillator = audioContext.createOscillator()
+      const gainNode = audioContext.createGain()
 
-    oscillator.connect(gainNode)
-    gainNode.connect(audioContext.destination)
+      oscillator.connect(gainNode)
+      gainNode.connect(audioContext.destination)
 
-    oscillator.frequency.setValueAtTime(800, audioContext.currentTime)
-    oscillator.frequency.setValueAtTime(600, audioContext.currentTime + 0.1)
-    oscillator.frequency.setValueAtTime(800, audioContext.currentTime + 0.2)
+      oscillator.frequency.setValueAtTime(800, audioContext.currentTime)
+      oscillator.frequency.setValueAtTime(600, audioContext.currentTime + 0.1)
+      oscillator.frequency.setValueAtTime(800, audioContext.currentTime + 0.2)
 
-    gainNode.gain.setValueAtTime(0.3, audioContext.currentTime)
-    gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.3)
+      gainNode.gain.setValueAtTime(0.3, audioContext.currentTime)
+      gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.3)
 
-    oscillator.start(audioContext.currentTime)
-    oscillator.stop(audioContext.currentTime + 0.3)
+      oscillator.start(audioContext.currentTime)
+      oscillator.stop(audioContext.currentTime + 0.3)
+    } catch (error) {
+      console.log("No se pudo reproducir sonido de alerta:", error)
+    }
   }
 
   const startAutoRefresh = () => {
