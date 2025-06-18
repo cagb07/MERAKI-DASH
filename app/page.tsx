@@ -54,7 +54,7 @@ export default function MerakiDashboard() {
   const [selectedSeverity, setSelectedSeverity] = useState<string>("all")
   const [searchTerm, setSearchTerm] = useState("")
   const [selectedAlert, setSelectedAlert] = useState<Alert | null>(null)
-  const [selectedTimespan, setSelectedTimespan] = useState<number>(7776000) // 90 días por defecto
+  const [selectedTimespan, setSelectedTimespan] = useState<number>(2592000) // 30 días por defecto (cambio de 7776000)
   const [loadFullHistory, setLoadFullHistory] = useState(false)
   const [useTestData, setUseTestData] = useState(false)
 
