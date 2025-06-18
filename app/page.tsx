@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -57,6 +57,10 @@ export default function MerakiDashboard() {
   const [apiKey, setApiKey] = useState<string>("")
   const [showApiKeyDialog, setShowApiKeyDialog] = useState(false)
   const [tempApiKey, setTempApiKey] = useState<string>("")
+
+  const [autoRefresh, setAutoRefresh] = useState(false)
+  const [refreshInterval, setRefreshInterval] = useState<NodeJS.Timeout | null>(null)
+  const [lastAlertCount, setLastAlertCount] = useState(0)
 
   const connectToMeraki = async () => {
     if (!apiKey) {
@@ -154,6 +158,8 @@ export default function MerakiDashboard() {
     setSelectedNetwork("all")
     setSelectedSeverity("all")
     setSearchTerm("")
+    stopAutoRefresh()
+    setLastAlertCount(0)
     toast({
       title: "Desconectado",
       description: "Se ha desconectado de Meraki Dashboard y limpiado todos los datos",
@@ -201,20 +207,74 @@ export default function MerakiDashboard() {
   }
 
   const exportAlerts = () => {
-    const dataStr = JSON.stringify(filteredAlerts, null, 2)
-    const dataUri = "data:application/json;charset=utf-8," + encodeURIComponent(dataStr)
+    try {
+      // Preparar los datos para Excel
+      const excelData = filteredAlerts.map((alert, index) => ({
+        "No.": index + 1,
+        "ID Alerta": alert.id,
+        Severidad: alert.severity.toUpperCase(),
+        Tipo: alert.type.replace("_", " ").replace(/\b\w/g, (l) => l.toUpperCase()),
+        Mensaje: alert.message,
+        Red: alert.networkName,
+        "ID Red": alert.networkId,
+        Dispositivo: alert.deviceSerial,
+        Estado: alert.status.toUpperCase(),
+        Fecha: new Date(alert.timestamp).toLocaleDateString(),
+        Hora: new Date(alert.timestamp).toLocaleTimeString(),
+        Timestamp: alert.timestamp,
+      }))
 
-    const exportFileDefaultName = `meraki_alerts_${new Date().toISOString().split("T")[0]}.json`
+      // Crear el contenido CSV (compatible con Excel)
+      const headers = Object.keys(excelData[0] || {})
+      const csvContent = [
+        headers.join(","),
+        ...excelData.map((row) =>
+          headers
+            .map((header) => {
+              const value = row[header as keyof typeof row]
+              // Escapar comillas y envolver en comillas si contiene comas
+              return typeof value === "string" && (value.includes(",") || value.includes('"'))
+                ? `"${value.replace(/"/g, '""')}"`
+                : value
+            })
+            .join(","),
+        ),
+      ].join("\n")
 
-    const linkElement = document.createElement("a")
-    linkElement.setAttribute("href", dataUri)
-    linkElement.setAttribute("download", exportFileDefaultName)
-    linkElement.click()
+      // Crear el archivo con BOM para compatibilidad con Excel
+      const BOM = "\uFEFF"
+      const blob = new Blob([BOM + csvContent], {
+        type: "text/csv;charset=utf-8",
+      })
 
-    toast({
-      title: "Exportación exitosa",
-      description: "Las alertas se han exportado correctamente",
-    })
+      // Generar nombre de archivo con fecha y hora
+      const now = new Date()
+      const dateStr = now.toISOString().split("T")[0]
+      const timeStr = now.toTimeString().split(" ")[0].replace(/:/g, "-")
+      const filename = `meraki_alertas_${dateStr}_${timeStr}.csv`
+
+      // Descargar el archivo
+      const url = window.URL.createObjectURL(blob)
+      const link = document.createElement("a")
+      link.href = url
+      link.download = filename
+      link.style.display = "none"
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      window.URL.revokeObjectURL(url)
+
+      toast({
+        title: "Exportación exitosa",
+        description: `Alertas exportadas a ${filename}. El archivo se abrirá automáticamente en Excel.`,
+      })
+    } catch (error) {
+      toast({
+        title: "Error en exportación",
+        description: "No se pudo exportar el archivo. Inténtalo de nuevo.",
+        variant: "destructive",
+      })
+    }
   }
 
   const clearAlerts = () => {
@@ -244,6 +304,69 @@ export default function MerakiDashboard() {
       description: "Tu API Key ha sido actualizada correctamente",
     })
   }
+
+  const playAlertSound = () => {
+    // Crear un sonido usando Web Audio API
+    const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)()
+    const oscillator = audioContext.createOscillator()
+    const gainNode = audioContext.createGain()
+
+    oscillator.connect(gainNode)
+    gainNode.connect(audioContext.destination)
+
+    oscillator.frequency.setValueAtTime(800, audioContext.currentTime)
+    oscillator.frequency.setValueAtTime(600, audioContext.currentTime + 0.1)
+    oscillator.frequency.setValueAtTime(800, audioContext.currentTime + 0.2)
+
+    gainNode.gain.setValueAtTime(0.3, audioContext.currentTime)
+    gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.3)
+
+    oscillator.start(audioContext.currentTime)
+    oscillator.stop(audioContext.currentTime + 0.3)
+  }
+
+  const startAutoRefresh = () => {
+    if (refreshInterval) {
+      clearInterval(refreshInterval)
+    }
+
+    const interval = setInterval(() => {
+      if (isConnected && !isLoading) {
+        refreshAlerts()
+      }
+    }, 10000) // Actualizar cada 10 segundos
+
+    setRefreshInterval(interval)
+    setAutoRefresh(true)
+  }
+
+  const stopAutoRefresh = () => {
+    if (refreshInterval) {
+      clearInterval(refreshInterval)
+      setRefreshInterval(null)
+    }
+    setAutoRefresh(false)
+  }
+
+  useEffect(() => {
+    if (alerts.length > lastAlertCount && lastAlertCount > 0) {
+      playAlertSound()
+      toast({
+        title: "Nueva alerta detectada",
+        description: `Se han detectado ${alerts.length - lastAlertCount} nueva(s) alerta(s)`,
+        variant: "default",
+      })
+    }
+    setLastAlertCount(alerts.length)
+  }, [alerts.length, lastAlertCount])
+
+  useEffect(() => {
+    return () => {
+      if (refreshInterval) {
+        clearInterval(refreshInterval)
+      }
+    }
+  }, [refreshInterval])
 
   const getSeverityIcon = (severity: string) => {
     switch (severity) {
@@ -296,9 +419,32 @@ export default function MerakiDashboard() {
           <div className="absolute top-0 right-0">
             <ThemeToggle />
           </div>
-          <div className="flex items-center justify-center gap-2">
-            <Shield className="h-8 w-8 text-blue-600" />
-            <h1 className="text-4xl font-bold text-slate-800 dark:text-slate-100">Meraki Dashboard</h1>
+          <div className="flex items-center justify-center gap-3">
+            <div className="relative">
+              <div className="w-12 h-12 bg-gradient-to-br from-blue-600 to-blue-800 rounded-xl flex items-center justify-center shadow-lg">
+                <svg
+                  className="w-8 h-8 text-white"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                  xmlns="http://www.w3.org/2000/svg"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"
+                  />
+                </svg>
+              </div>
+              <div className="absolute -top-1 -right-1 w-4 h-4 bg-green-500 rounded-full border-2 border-white animate-pulse"></div>
+            </div>
+            <div className="text-center">
+              <h1 className="text-4xl font-bold text-slate-800 dark:text-slate-100 tracking-tight">Meraki Dashboard</h1>
+              <div className="text-sm text-blue-600 dark:text-blue-400 font-medium tracking-wider">
+                NETWORK SECURITY
+              </div>
+            </div>
           </div>
           <p className="text-slate-600 dark:text-slate-400">Monitor de Alertas y Estado de Red</p>
         </div>
@@ -340,9 +486,29 @@ export default function MerakiDashboard() {
                 Actualizar
               </Button>
 
+              {isConnected && (
+                <Button
+                  onClick={autoRefresh ? stopAutoRefresh : startAutoRefresh}
+                  variant={autoRefresh ? "default" : "outline"}
+                  className={autoRefresh ? "bg-blue-600 hover:bg-blue-700" : ""}
+                >
+                  {autoRefresh ? (
+                    <>
+                      <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                      Auto ON
+                    </>
+                  ) : (
+                    <>
+                      <RefreshCw className="h-4 w-4 mr-2" />
+                      Auto OFF
+                    </>
+                  )}
+                </Button>
+              )}
+
               <Button onClick={exportAlerts} disabled={alerts.length === 0} variant="outline">
                 <Download className="h-4 w-4 mr-2" />
-                Exportar
+                Exportar a Excel
               </Button>
 
               <Button onClick={clearAlerts} variant="outline" className="text-red-600 hover:text-red-700">
@@ -351,9 +517,8 @@ export default function MerakiDashboard() {
               </Button>
 
               <div className="ml-auto flex items-center gap-2">
-                {apiKey && <div className="text-xs text-muted-foreground">API: {apiKey.substring(0, 8)}...</div>}
                 <Badge variant={isConnected ? "default" : "secondary"}>
-                  {isConnected ? "Conectado" : "Desconectado"}
+                  {isConnected ? (autoRefresh ? "🔴 En Vivo" : "Conectado") : "Desconectado"}
                 </Badge>
               </div>
             </div>
@@ -361,14 +526,39 @@ export default function MerakiDashboard() {
         </Card>
 
         {/* Statistics */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
           <Card>
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
               <CardTitle className="text-sm font-medium">Críticas</CardTitle>
               <AlertTriangle className="h-4 w-4 text-red-500" />
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold text-red-600">{alertStats.critical}</div>
+              <div className="text-2xl font-bold text-red-600 mb-2">{alertStats.critical}</div>
+              <div className="relative w-16 h-16 mx-auto mb-2">
+                <svg className="w-16 h-16 transform -rotate-90" viewBox="0 0 36 36">
+                  <path
+                    className="text-gray-200"
+                    stroke="currentColor"
+                    strokeWidth="3"
+                    fill="none"
+                    d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                  />
+                  <path
+                    className="text-red-500"
+                    stroke="currentColor"
+                    strokeWidth="3"
+                    fill="none"
+                    strokeDasharray={`${alertStats.total > 0 ? (alertStats.critical / alertStats.total) * 100 : 0}, 100`}
+                    d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                  />
+                </svg>
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <span className="text-xs font-semibold text-red-600">
+                    {alertStats.total > 0 ? Math.round((alertStats.critical / alertStats.total) * 100) : 0}%
+                  </span>
+                </div>
+              </div>
+              <p className="text-xs text-muted-foreground text-center">del total</p>
             </CardContent>
           </Card>
 
@@ -378,7 +568,32 @@ export default function MerakiDashboard() {
               <Info className="h-4 w-4 text-yellow-500" />
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold text-yellow-600">{alertStats.warning}</div>
+              <div className="text-2xl font-bold text-yellow-600 mb-2">{alertStats.warning}</div>
+              <div className="relative w-16 h-16 mx-auto mb-2">
+                <svg className="w-16 h-16 transform -rotate-90" viewBox="0 0 36 36">
+                  <path
+                    className="text-gray-200"
+                    stroke="currentColor"
+                    strokeWidth="3"
+                    fill="none"
+                    d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                  />
+                  <path
+                    className="text-yellow-500"
+                    stroke="currentColor"
+                    strokeWidth="3"
+                    fill="none"
+                    strokeDasharray={`${alertStats.total > 0 ? (alertStats.warning / alertStats.total) * 100 : 0}, 100`}
+                    d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                  />
+                </svg>
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <span className="text-xs font-semibold text-yellow-600">
+                    {alertStats.total > 0 ? Math.round((alertStats.warning / alertStats.total) * 100) : 0}%
+                  </span>
+                </div>
+              </div>
+              <p className="text-xs text-muted-foreground text-center">del total</p>
             </CardContent>
           </Card>
 
@@ -388,7 +603,32 @@ export default function MerakiDashboard() {
               <CheckCircle className="h-4 w-4 text-blue-500" />
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold text-blue-600">{alertStats.info}</div>
+              <div className="text-2xl font-bold text-blue-600 mb-2">{alertStats.info}</div>
+              <div className="relative w-16 h-16 mx-auto mb-2">
+                <svg className="w-16 h-16 transform -rotate-90" viewBox="0 0 36 36">
+                  <path
+                    className="text-gray-200"
+                    stroke="currentColor"
+                    strokeWidth="3"
+                    fill="none"
+                    d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                  />
+                  <path
+                    className="text-blue-500"
+                    stroke="currentColor"
+                    strokeWidth="3"
+                    fill="none"
+                    strokeDasharray={`${alertStats.total > 0 ? (alertStats.info / alertStats.total) * 100 : 0}, 100`}
+                    d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                  />
+                </svg>
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <span className="text-xs font-semibold text-blue-600">
+                    {alertStats.total > 0 ? Math.round((alertStats.info / alertStats.total) * 100) : 0}%
+                  </span>
+                </div>
+              </div>
+              <p className="text-xs text-muted-foreground text-center">del total</p>
             </CardContent>
           </Card>
 
@@ -398,7 +638,52 @@ export default function MerakiDashboard() {
               <Activity className="h-4 w-4 text-slate-500" />
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold text-slate-700">{alertStats.total}</div>
+              <div className="text-2xl font-bold text-slate-700 mb-2">{alertStats.total}</div>
+              <div className="relative w-16 h-16 mx-auto mb-2">
+                <svg className="w-16 h-16 transform -rotate-90" viewBox="0 0 36 36">
+                  <path
+                    className="text-gray-200"
+                    stroke="currentColor"
+                    strokeWidth="3"
+                    fill="none"
+                    d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                  />
+                  {alertStats.total > 0 && (
+                    <>
+                      <path
+                        className="text-red-500"
+                        stroke="currentColor"
+                        strokeWidth="3"
+                        fill="none"
+                        strokeDasharray={`${(alertStats.critical / alertStats.total) * 100}, 100`}
+                        d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                      />
+                      <path
+                        className="text-yellow-500"
+                        stroke="currentColor"
+                        strokeWidth="3"
+                        fill="none"
+                        strokeDasharray={`${(alertStats.warning / alertStats.total) * 100}, 100`}
+                        strokeDashoffset={`-${(alertStats.critical / alertStats.total) * 100}`}
+                        d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                      />
+                      <path
+                        className="text-blue-500"
+                        stroke="currentColor"
+                        strokeWidth="3"
+                        fill="none"
+                        strokeDasharray={`${(alertStats.info / alertStats.total) * 100}, 100`}
+                        strokeDashoffset={`-${((alertStats.critical + alertStats.warning) / alertStats.total) * 100}`}
+                        d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                      />
+                    </>
+                  )}
+                </svg>
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <span className="text-xs font-semibold text-slate-700">100%</span>
+                </div>
+              </div>
+              <p className="text-xs text-muted-foreground text-center">Distribución</p>
             </CardContent>
           </Card>
         </div>
@@ -626,15 +911,6 @@ export default function MerakiDashboard() {
                   El API Key debe tener al menos 20 caracteres y se mantendrá seguro en tu sesión.
                 </p>
               </div>
-
-              {apiKey && (
-                <div className="p-3 bg-muted rounded-lg">
-                  <p className="text-sm font-medium mb-1">API Key Actual:</p>
-                  <p className="text-xs font-mono text-muted-foreground">
-                    {apiKey.substring(0, 12)}...{apiKey.substring(apiKey.length - 4)}
-                  </p>
-                </div>
-              )}
 
               <div className="flex justify-end gap-2">
                 <Button
