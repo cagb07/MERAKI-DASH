@@ -146,7 +146,16 @@ export default function MerakiDashboard() {
       setAlerts(initialAlerts)
       setUseTestData(true)
       setIsConnected(true)
+
+      // IMPORTANTE: Resetear loading aquí para mostrar los datos de prueba
+      setIsLoading(false)
+
       console.log(`✅ Mostrando ${initialAlerts.length} alertas de prueba iniciales`)
+
+      toast({
+        title: "Conexión exitosa",
+        description: `Conectado a Meraki API. Mostrando ${initialAlerts.length} alertas de prueba mientras se cargan datos reales...`,
+      })
 
       // Ahora intentar obtener alertas reales en segundo plano
       console.log("🚨 Intentando obtener alertas reales en segundo plano...")
@@ -195,11 +204,6 @@ export default function MerakiDashboard() {
         })
       } else {
         console.log(`🧪 Manteniendo ${initialAlerts.length} alertas de prueba`)
-
-        toast({
-          title: "Conexión exitosa",
-          description: `Conectado a Meraki API. Mostrando ${initialAlerts.length} alertas de prueba (no se encontraron alertas reales)`,
-        })
       }
     } catch (error) {
       console.error("❌ Error en conexión:", error)
@@ -223,15 +227,17 @@ export default function MerakiDashboard() {
       setUseTestData(true)
       setIsConnected(true)
 
+      // IMPORTANTE: También resetear loading en caso de error
+      setIsLoading(false)
+
       toast({
         title: "Error de conexión",
         description: `${error instanceof Error ? error.message : "Error desconocido"}. Mostrando datos de prueba.`,
         variant: "destructive",
       })
-    } finally {
-      setIsLoading(false)
-      console.log("🏁 Proceso de conexión finalizado")
     }
+
+    console.log("🏁 Proceso de conexión finalizado")
   }
 
   const loadMoreAlerts = async () => {
