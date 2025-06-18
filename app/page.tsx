@@ -126,35 +126,61 @@ export default function MerakiDashboard() {
       let hasRealAlerts = false
 
       for (const org of organizations) {
-        console.log(`🔍 Procesando alertas de: ${org.name}`)
-        const alertsResult = await getAlerts(apiKey, org.id, 86400) // Solo 24 horas inicialmente
+        try {
+          console.log(`🔍 Procesando alertas de: ${org.name}`)
+          const alertsResult = await getAlerts(apiKey, org.id, 86400) // Solo 24 horas inicialmente
 
-        console.log(`📊 Resultado para ${org.name}:`, alertsResult)
+          console.log(`📊 Resultado para ${org.name}:`, alertsResult)
 
-        if (alertsResult.success && alertsResult.data.length > 0) {
-          hasRealAlerts = true
-          const orgAlerts = alertsResult.data.map((alert) => ({
-            id: alert.id,
-            type: alert.type,
-            severity: alert.severity,
-            message: alert.message,
-            timestamp: alert.timestamp,
-            networkId: alert.networkId,
-            networkName: alert.networkName,
-            deviceSerial: alert.deviceSerial || "N/A",
-            status: alert.status,
-          }))
-          allAlerts.push(...orgAlerts)
-          console.log(`✅ Alertas agregadas de ${org.name}: ${orgAlerts.length}`)
-          console.log(`📈 Total acumulado: ${allAlerts.length}`)
-        } else {
-          console.log(`❌ Sin alertas en ${org.name}`)
+          if (alertsResult.success && alertsResult.data.length > 0) {
+            hasRealAlerts = true
+            const orgAlerts = alertsResult.data.map((alert) => ({
+              id: alert.id,
+              type: alert.type,
+              severity: alert.severity,
+              message: alert.message,
+              timestamp: alert.timestamp,
+              networkId: alert.networkId,
+              networkName: alert.networkName,
+              deviceSerial: alert.deviceSerial || "N/A",
+              status: alert.status,
+            }))
+            allAlerts.push(...orgAlerts)
+            console.log(`✅ Alertas agregadas de ${org.name}: ${orgAlerts.length}`)
+            console.log(`📈 Total acumulado: ${allAlerts.length}`)
+          } else {
+            console.log(`❌ Sin alertas en ${org.name} - Generando datos de prueba para esta organización`)
+            // Generar alertas de prueba específicas para esta organización
+            const networkIds = allNetworks.filter((n) => n.organizationId === org.id).map((n) => n.id)
+            if (networkIds.length > 0) {
+              const testAlerts = await generateTestAlerts(org.id, networkIds)
+              allAlerts.push(
+                ...testAlerts.map((alert) => ({
+                  id: `${org.id}_${alert.id}`,
+                  type: alert.type,
+                  severity: alert.severity,
+                  message: `[${org.name}] ${alert.message}`,
+                  timestamp: alert.timestamp,
+                  networkId: alert.networkId,
+                  networkName: alert.networkName,
+                  deviceSerial: alert.deviceSerial,
+                  status: alert.status,
+                })),
+              )
+              setUseTestData(true)
+              console.log(`🧪 Alertas de prueba generadas para ${org.name}: ${testAlerts.length}`)
+            }
+          }
+        } catch (orgError) {
+          console.error(`❌ Error obteniendo alertas de ${org.name}:`, orgError)
+          // Continuar con la siguiente organización
+          continue
         }
       }
 
-      // Si no hay alertas reales, generar alertas de prueba
-      if (!hasRealAlerts) {
-        console.log("🧪 Generando alertas de prueba...")
+      // Si no hay alertas reales en ninguna organización, generar alertas de prueba generales
+      if (!hasRealAlerts && allAlerts.length === 0) {
+        console.log("🧪 Generando alertas de prueba generales...")
         const networkIds = allNetworks.map((n) => n.id)
         const testAlerts = await generateTestAlerts(organizations[0]?.id || "test_org", networkIds)
         allAlerts.push(
@@ -172,9 +198,8 @@ export default function MerakiDashboard() {
         )
         setUseTestData(true)
         console.log(`🧪 Alertas de prueba generadas: ${testAlerts.length}`)
-      } else {
-        setUseTestData(false)
-        console.log(`✅ Usando alertas reales: ${allAlerts.length}`)
+      } else if (allAlerts.length > 0) {
+        console.log(`✅ Total de alertas cargadas: ${allAlerts.length} (${hasRealAlerts ? "reales" : "mixtas"})`)
       }
 
       console.log(`🎯 Actualizando estado con ${allAlerts.length} alertas`)
@@ -233,23 +258,29 @@ export default function MerakiDashboard() {
       let hasRealAlerts = false
 
       for (const org of organizations) {
-        console.log(`🔍 Cargando más alertas de: ${org.name}`)
-        const alertsResult = await getAlerts(apiKey, org.id, nextTimespan)
+        try {
+          console.log(`🔍 Cargando más alertas de: ${org.name}`)
+          const alertsResult = await getAlerts(apiKey, org.id, nextTimespan)
 
-        if (alertsResult.success && alertsResult.data.length > 0) {
-          hasRealAlerts = true
-          const orgAlerts = alertsResult.data.map((alert) => ({
-            id: alert.id,
-            type: alert.type,
-            severity: alert.severity,
-            message: alert.message,
-            timestamp: alert.timestamp,
-            networkId: alert.networkId,
-            networkName: alert.networkName,
-            deviceSerial: alert.deviceSerial || "N/A",
-            status: alert.status,
-          }))
-          allAlerts.push(...orgAlerts)
+          if (alertsResult.success && alertsResult.data.length > 0) {
+            hasRealAlerts = true
+            const orgAlerts = alertsResult.data.map((alert) => ({
+              id: alert.id,
+              type: alert.type,
+              severity: alert.severity,
+              message: alert.message,
+              timestamp: alert.timestamp,
+              networkId: alert.networkId,
+              networkName: alert.networkName,
+              deviceSerial: alert.deviceSerial || "N/A",
+              status: alert.status,
+            }))
+            allAlerts.push(...orgAlerts)
+          }
+        } catch (orgError) {
+          console.error(`❌ Error cargando más alertas de ${org.name}:`, orgError)
+          // Continuar con la siguiente organización
+          continue
         }
       }
 
