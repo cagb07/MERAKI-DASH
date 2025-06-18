@@ -1,137 +1,96 @@
 "use client"
 
-import { useState } from "react"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
+import { useState, useEffect, useCallback } from "react"
 import { Badge } from "@/components/ui/badge"
-import { Input } from "@/components/ui/input"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog"
-import { AlertTriangle, CheckCircle, Info, RefreshCw, Download, Trash2, Wifi, Shield, Activity } from "lucide-react"
+import { Button } from "@/components/ui/button" // Keep for AlertDetailsDialog if any Button is used there directly
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { AlertTriangle, CheckCircle, Info } from "lucide-react" // Keep for getSeverityIcon and AlertDetailsDialog
 import { toast } from "@/hooks/use-toast"
 import { ThemeToggle } from "@/components/theme-toggle"
 
-interface Alert {
-  id: string
-  type: string
-  severity: "critical" | "warning" | "info"
-  message: string
-  timestamp: string
-  networkId: string
-  networkName: string
-  deviceSerial: string
-  status: "active" | "acknowledged" | "resolved"
-}
+// Import new components
+import StatsCards from "@/components/dashboard/StatsCards"
+import AlertFilters from "@/components/dashboard/AlertFilters"
+import AlertsTable from "@/components/dashboard/AlertsTable"
+import ApiKeyDialog from "@/components/dashboard/ApiKeyDialog"
+import ControlPanel from "@/components/dashboard/ControlPanel"
 
-interface Organization {
-  id: string
-  name: string
-}
+// Import types and API functions from lib/meraki-api
+import {
+  type Alert,
+  type Organization,
+  type Network,
+  connectAndFetchInitialData,
+  fetchLatestAlerts,
+} from "@/lib/meraki-api"
 
-interface Network {
-  id: string
-  name: string
-  organizationId: string
-}
 
 export default function MerakiDashboard() {
-  const [alerts, setAlerts] = useState<Alert[]>([])
-  const [organizations, setOrganizations] = useState<Organization[]>([])
-  const [networks, setNetworks] = useState<Network[]>([])
-  const [isConnected, setIsConnected] = useState(false)
-  const [isLoading, setIsLoading] = useState(false)
-  const [selectedOrg, setSelectedOrg] = useState<string>("all")
-  const [selectedNetwork, setSelectedNetwork] = useState<string>("all")
-  const [selectedSeverity, setSelectedSeverity] = useState<string>("all")
-  const [searchTerm, setSearchTerm] = useState("")
-  const [selectedAlert, setSelectedAlert] = useState<Alert | null>(null)
+  // State for various data pieces
+  const [alerts, setAlerts] = useState<Alert[]>([]) // Stores all alerts fetched from the API
+  const [organizations, setOrganizations] = useState<Organization[]>([]) // Stores organizations
+  const [networks, setNetworks] = useState<Network[]>([]) // Stores networks
 
-  const [apiKey, setApiKey] = useState<string>("")
-  const [showApiKeyDialog, setShowApiKeyDialog] = useState(false)
-  const [tempApiKey, setTempApiKey] = useState<string>("")
+  // UI and Connection State
+  const [isConnected, setIsConnected] = useState(false) // Tracks connection status to Meraki
+  const [isLoading, setIsLoading] = useState(false) // True when an API call is in progress
 
-  const connectToMeraki = async () => {
+  // Filtering State
+  const [selectedOrg, setSelectedOrg] = useState<string>("all") // Selected organization for filtering
+  const [selectedNetwork, setSelectedNetwork] = useState<string>("all") // Selected network for filtering
+  const [selectedSeverity, setSelectedSeverity] = useState<string>("all") // Selected severity for filtering
+  const [searchTerm, setSearchTerm] = useState("") // Search term for filtering alerts
+
+  // Modal/Dialog State
+  const [selectedAlert, setSelectedAlert] = useState<Alert | null>(null) // Alert selected for viewing details
+  const [showApiKeyDialog, setShowApiKeyDialog] = useState(false) // Controls visibility of API key dialog
+
+  // API Key State
+  const [apiKey, setApiKey] = useState<string>("") // Stores the current Meraki API key
+  const [tempApiKey, setTempApiKey] = useState<string>("") // Temporarily stores API key input from the dialog
+
+  // Auto-Refresh State
+  const [autoRefresh, setAutoRefresh] = useState(false) // True if auto-refresh is enabled
+  const [refreshInterval, setRefreshInterval] = useState<NodeJS.Timeout | null>(null) // Stores interval ID for auto-refresh
+  const [lastAlertCount, setLastAlertCount] = useState(0) // Used to detect new alerts for sound notification
+
+  // Effect to load API key from localStorage on component mount.
+  // This allows the API key to persist across browser sessions.
+  useEffect(() => {
+    // Security Note: Storing API keys in localStorage can be a security risk (XSS).
+    // For production, a backend proxy or more secure storage is recommended.
+    const storedApiKey = localStorage.getItem("merakiApiKey")
+    if (storedApiKey) {
+      setApiKey(storedApiKey)
+      setTempApiKey(storedApiKey) // Pre-fill for "Change API Key" dialog
+      toast({
+        title: "API Key Cargada",
+        description: "API Key cargada desde el almacenamiento local.",
+      })
+      // Optionally, trigger connectToMeraki() here if auto-connect is desired
+      // For now, user needs to click "Conectar"
+    }
+  }, []) // Empty dependency array ensures this runs only once on mount
+
+  /**
+   * Handles the connection to the Meraki "API".
+   * Fetches initial organizations, networks, and alerts.
+   */
+  const connectToMeraki = useCallback(async () => {
     if (!apiKey) {
-      setShowApiKeyDialog(true)
+      setShowApiKeyDialog(true) // Prompt for API key if not already set
       return
     }
-
     setIsLoading(true)
     try {
-      // Simulate API connection with the provided API key
-      await new Promise((resolve) => setTimeout(resolve, 2000))
-
-      // Basic API key validation (Meraki API keys are typically 40 characters)
-      if (apiKey.length < 20) {
-        throw new Error("API Key parece ser inválida. Debe tener al menos 20 caracteres.")
-      }
-
-      // Simulate fetching organizations after successful connection
-      const sampleOrgs: Organization[] = [
-        { id: "org_1", name: "Oficina Principal" },
-        { id: "org_2", name: "Sucursal Norte" },
-        { id: "org_3", name: "Planta Baja" },
-      ]
-
-      const sampleNetworks: Network[] = [
-        { id: "N_123456789", name: "Red Principal", organizationId: "org_1" },
-        { id: "N_987654321", name: "Red Sucursal", organizationId: "org_2" },
-        { id: "N_456789123", name: "Red Planta Baja", organizationId: "org_3" },
-      ]
-
-      const sampleAlerts: Alert[] = [
-        {
-          id: "alert_001",
-          type: "gateway_down",
-          severity: "critical",
-          message: "Gateway MX84 en oficina principal desconectado",
-          timestamp: new Date().toISOString(),
-          networkId: "N_123456789",
-          networkName: "Oficina Principal",
-          deviceSerial: "Q2XX-XXXX-XXXX",
-          status: "active",
-        },
-        {
-          id: "alert_002",
-          type: "high_cpu_usage",
-          severity: "warning",
-          message: "Uso alto de CPU en switch MS220-8P",
-          timestamp: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
-          networkId: "N_987654321",
-          networkName: "Sucursal Norte",
-          deviceSerial: "Q2YY-YYYY-YYYY",
-          status: "acknowledged",
-        },
-        {
-          id: "alert_003",
-          type: "client_connection_failed",
-          severity: "info",
-          message: "Múltiples fallos de conexión de clientes en AP MR36",
-          timestamp: new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString(),
-          networkId: "N_456789123",
-          networkName: "Planta Baja",
-          deviceSerial: "Q2ZZ-ZZZZ-ZZZZ",
-          status: "resolved",
-        },
-      ]
-
-      // Set all the data after successful connection
-      setOrganizations(sampleOrgs)
-      setNetworks(sampleNetworks)
-      setAlerts(sampleAlerts)
+      const data = await connectAndFetchInitialData(apiKey)
+      setOrganizations(data.organizations)
+      setNetworks(data.networks)
+      setAlerts(data.alerts)
       setIsConnected(true)
-
       toast({
         title: "Conexión exitosa",
-        description: `Conectado a Meraki Dashboard. Cargadas ${sampleOrgs.length} organizaciones y ${sampleAlerts.length} alertas.`,
+        description: `Conectado a Meraki Dashboard. Cargadas ${data.organizations.length} organizaciones y ${data.alerts.length} alertas.`,
       })
     } catch (error) {
       toast({
@@ -139,14 +98,19 @@ export default function MerakiDashboard() {
         description: error instanceof Error ? error.message : "No se pudo conectar a Meraki API",
         variant: "destructive",
       })
+      setIsConnected(false) // Ensure isConnected is false on any error
     } finally {
       setIsLoading(false)
     }
-  }
+  }, [apiKey])
 
-  const disconnectFromMeraki = () => {
+  /**
+   * Handles disconnection from Meraki.
+   * Clears local state, stops auto-refresh, and removes API key from localStorage.
+   */
+  const disconnectFromMeraki = useCallback(() => {
     setIsConnected(false)
-    setApiKey("")
+    localStorage.removeItem("merakiApiKey") // Remove API key from persistent storage
     setAlerts([])
     setOrganizations([])
     setNetworks([])
@@ -154,139 +118,220 @@ export default function MerakiDashboard() {
     setSelectedNetwork("all")
     setSelectedSeverity("all")
     setSearchTerm("")
-    toast({
-      title: "Desconectado",
-      description: "Se ha desconectado de Meraki Dashboard y limpiado todos los datos",
-    })
-  }
+    stopAutoRefresh()
+    setLastAlertCount(0)
+    toast({ title: "Desconectado", description: "Se ha desconectado de Meraki Dashboard y la API Key ha sido eliminada del almacenamiento local." })
+  }, [stopAutoRefresh])
 
+  /**
+   * Opens the API key dialog, pre-filling it with the current key.
+   */
   const changeApiKey = () => {
     setTempApiKey(apiKey)
     setShowApiKeyDialog(true)
   }
 
-  const refreshAlerts = async () => {
+  /**
+   * Fetches the latest alerts from the Meraki "API".
+   * Prepends new alerts to the existing list.
+   */
+  const refreshAlerts = useCallback(async () => {
+    if (!isConnected || !apiKey) { // Do not attempt refresh if not connected or no API key
+      toast({ title: "No conectado", description: "Debe estar conectado para actualizar las alertas.", variant: "destructive"})
+      return;
+    }
     setIsLoading(true)
     try {
-      // Simulate API call
-      await new Promise((resolve) => setTimeout(resolve, 1500))
-
-      // Generate new sample alerts
-      const newAlert: Alert = {
-        id: `alert_${Date.now()}`,
-        type: "bandwidth_exceeded",
-        severity: "warning",
-        message: "Ancho de banda excedido en red corporativa",
-        timestamp: new Date().toISOString(),
-        networkId: "N_123456789",
-        networkName: "Red Corporativa",
-        deviceSerial: "Q2AA-BBBB-CCCC",
-        status: "active",
+      const newAlerts = await fetchLatestAlerts(apiKey)
+      setAlerts((prev) => [...newAlerts, ...prev]) // Prepend new alerts
+      if (newAlerts.length > 0) {
+        toast({ title: "Alertas actualizadas", description: `Se han cargado ${newAlerts.length} nueva(s) alerta(s).` })
+      } else {
+        toast({ title: "Sin nuevas alertas", description: "No hay nuevas alertas en este momento."})
       }
-
-      setAlerts((prev) => [newAlert, ...prev])
-      toast({
-        title: "Alertas actualizadas",
-        description: "Se han cargado las últimas alertas",
-      })
     } catch (error) {
-      toast({
-        title: "Error",
-        description: "No se pudieron actualizar las alertas",
-        variant: "destructive",
-      })
+      toast({ title: "Error al actualizar", description: error instanceof Error ? error.message : "No se pudieron actualizar las alertas", variant: "destructive" })
     } finally {
       setIsLoading(false)
     }
-  }
+  }, [apiKey, isConnected])
 
+  /**
+   * Exports the currently filtered alerts to a CSV file.
+   */
   const exportAlerts = () => {
-    const dataStr = JSON.stringify(filteredAlerts, null, 2)
-    const dataUri = "data:application/json;charset=utf-8," + encodeURIComponent(dataStr)
-
-    const exportFileDefaultName = `meraki_alerts_${new Date().toISOString().split("T")[0]}.json`
-
-    const linkElement = document.createElement("a")
-    linkElement.setAttribute("href", dataUri)
-    linkElement.setAttribute("download", exportFileDefaultName)
-    linkElement.click()
-
-    toast({
-      title: "Exportación exitosa",
-      description: "Las alertas se han exportado correctamente",
-    })
+    try {
+      // Format data for CSV
+      const excelData = filteredAlerts.map((alert, index) => ({
+        "No.": index + 1, "ID Alerta": alert.id, Severidad: alert.severity.toUpperCase(), Tipo: alert.type.replace("_", " ").replace(/\b\w/g, (l) => l.toUpperCase()), Mensaje: alert.message, Red: alert.networkName, "ID Red": alert.networkId, Dispositivo: alert.deviceSerial, Estado: alert.status.toUpperCase(), Fecha: new Date(alert.timestamp).toLocaleDateString(), Hora: new Date(alert.timestamp).toLocaleTimeString(), Timestamp: alert.timestamp,
+      }))
+      const headers = Object.keys(excelData[0] || {})
+      const csvContent = [headers.join(","), ...excelData.map((row) => headers.map((header) => { const value = row[header as keyof typeof row]; return typeof value === "string" && (value.includes(",") || value.includes('"')) ? `"${value.replace(/"/g, '""')}"` : value }).join(",")),].join("\n")
+      const BOM = "\uFEFF"
+      const blob = new Blob([BOM + csvContent], { type: "text/csv;charset=utf-8", })
+      const now = new Date(); const dateStr = now.toISOString().split("T")[0]; const timeStr = now.toTimeString().split(" ")[0].replace(/:/g, "-"); const filename = `meraki_alertas_${dateStr}_${timeStr}.csv`
+      const url = window.URL.createObjectURL(blob); const link = document.createElement("a"); link.href = url; link.download = filename; link.style.display = "none"; document.body.appendChild(link); link.click(); document.body.removeChild(link); window.URL.revokeObjectURL(url)
+      toast({ title: "Exportación exitosa", description: `Alertas exportadas a ${filename}.` })
+    } catch (error) {
+      toast({ title: "Error en exportación", description: "No se pudo exportar el archivo.", variant: "destructive" })
+    }
   }
 
+  /**
+   * Clears all alerts from the state.
+   */
   const clearAlerts = () => {
     setAlerts([])
-    toast({
-      title: "Alertas limpiadas",
-      description: "Todas las alertas han sido eliminadas",
-    })
+    toast({ title: "Alertas limpiadas", description: "Todas las alertas han sido eliminadas." })
   }
 
+  /**
+   * Handles the submission of a new or updated API key from the dialog.
+   * Validates the key, updates state, and stores it in localStorage.
+   */
   const handleApiKeySubmit = () => {
-    if (tempApiKey.length < 20) {
-      toast({
-        title: "Error",
-        description: "API Key debe tener al menos 20 caracteres",
-        variant: "destructive",
-      })
+    if (tempApiKey.length < 20) { // Basic validation
+      toast({ title: "Error", description: "API Key debe tener al menos 20 caracteres.", variant: "destructive" })
       return
     }
-
     setApiKey(tempApiKey)
+    // Store in localStorage
+    // NOTE: Storing API keys in localStorage has security implications.
+    localStorage.setItem("merakiApiKey", tempApiKey)
     setShowApiKeyDialog(false)
-    setTempApiKey("")
-
-    toast({
-      title: "API Key actualizada",
-      description: "Tu API Key ha sido actualizada correctamente",
-    })
+    toast({ title: "API Key actualizada", description: "Tu API Key ha sido actualizada y guardada localmente." })
+    // connectToMeraki(); // Optional: Automatically attempt to connect after updating the key.
   }
 
+  /**
+   * Plays a simple sound notification using the Web Audio API.
+   * Used to indicate new alerts when auto-refresh is on.
+   */
+  const playAlertSound = useCallback(() => {
+    const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)()
+    const oscillator = audioContext.createOscillator();
+    const gainNode = audioContext.createGain()
+    oscillator.connect(gainNode)
+    gainNode.connect(audioContext.destination)
+
+    // Define sound properties (frequency, duration, volume)
+    oscillator.frequency.setValueAtTime(800, audioContext.currentTime) // Start frequency
+    oscillator.frequency.setValueAtTime(600, audioContext.currentTime + 0.1) // Change frequency
+    oscillator.frequency.setValueAtTime(800, audioContext.currentTime + 0.2) // Back to start
+
+    gainNode.gain.setValueAtTime(0.3, audioContext.currentTime) // Start volume
+    gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.3) // Fade out
+
+    oscillator.start(audioContext.currentTime)
+    oscillator.stop(audioContext.currentTime + 0.3) // Stop after 0.3 seconds
+  }, [])
+
+  /**
+   * Stops the auto-refresh interval.
+   */
+  const stopAutoRefresh = useCallback(() => {
+    if (refreshInterval) {
+      clearInterval(refreshInterval)
+      setRefreshInterval(null)
+    }
+    setAutoRefresh(false)
+  }, [refreshInterval])
+
+  /**
+   * Starts the auto-refresh interval to fetch alerts periodically.
+   */
+  const startAutoRefresh = useCallback(() => {
+    stopAutoRefresh() // Clear any existing interval first
+    const interval = setInterval(() => {
+      if (isConnected && !isLoading && apiKey) { // Check conditions before refreshing
+        refreshAlerts()
+      }
+    }, 10000) // Refresh every 10 seconds
+    setRefreshInterval(interval)
+    setAutoRefresh(true)
+  }, [isConnected, isLoading, refreshAlerts, stopAutoRefresh, apiKey])
+
+
+  // Effect to play a sound when new alerts are detected (and not currently loading).
+  useEffect(() => {
+    // This effect relies on `lastAlertCount` to determine if new alerts have arrived.
+    // Sound is played only if not in an `isLoading` state (e.g., initial connection).
+    if (alerts.length > lastAlertCount && lastAlertCount > 0 && isConnected && !isLoading) {
+      playAlertSound();
+    }
+    setLastAlertCount(alerts.length) // Update lastAlertCount after checking
+  }, [alerts.length, playAlertSound, isConnected, lastAlertCount, isLoading])
+
+  // Effect to clean up the auto-refresh interval when the component unmounts.
+  useEffect(() => {
+    return () => {
+      stopAutoRefresh()
+    }
+  }, [stopAutoRefresh])
+
+  // Helper functions for rendering severity icons and badges, passed to child components.
+  /**
+   * Returns a JSX element for the severity icon based on the alert's severity.
+   * @param severity - The severity level ("critical", "warning", "info").
+   * @returns A Lucide icon component.
+   */
   const getSeverityIcon = (severity: string) => {
     switch (severity) {
-      case "critical":
-        return <AlertTriangle className="h-4 w-4 text-red-500" />
-      case "warning":
-        return <Info className="h-4 w-4 text-yellow-500" />
-      case "info":
-        return <CheckCircle className="h-4 w-4 text-blue-500" />
-      default:
-        return <Info className="h-4 w-4" />
+      case "critical": return <AlertTriangle className="h-4 w-4 text-red-500" />;
+      case "warning": return <Info className="h-4 w-4 text-yellow-500" />;
+      case "info": return <CheckCircle className="h-4 w-4 text-blue-500" />;
+      default: return <Info className="h-4 w-4" />;
     }
   }
 
+  /**
+   * Returns a Badge component styled according to the alert's severity.
+   * @param severity - The severity level ("critical", "warning", "info").
+   * @returns A Badge component.
+   */
   const getSeverityBadge = (severity: string) => {
-    const variants = {
-      critical: "destructive",
-      warning: "default",
-      info: "secondary",
-    } as const
-
-    return <Badge variant={variants[severity as keyof typeof variants] || "default"}>{severity.toUpperCase()}</Badge>
+    const variants = { critical: "destructive", warning: "default", info: "secondary" } as const;
+    return <Badge variant={variants[severity as keyof typeof variants] || "default"}>{severity.toUpperCase()}</Badge>;
   }
 
+  // Memoized filtered alerts based on current search and filter criteria.
   const filteredAlerts = alerts.filter((alert) => {
     const matchesSearch =
       alert.message.toLowerCase().includes(searchTerm.toLowerCase()) ||
       alert.networkName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      alert.deviceSerial.toLowerCase().includes(searchTerm.toLowerCase())
+      alert.deviceSerial.toLowerCase().includes(searchTerm.toLowerCase());
 
-    const matchesOrg = selectedOrg === "all" || alert.networkName.includes(selectedOrg)
-    const matchesNetwork = selectedNetwork === "all" || alert.networkId === selectedNetwork
-    const matchesSeverity = selectedSeverity === "all" || alert.severity === selectedSeverity
+    const matchesOrg = selectedOrg === "all" ||
+      organizations.find(o => o.name === selectedOrg && alert.networkName.includes(o.name));
+    const matchesNetwork = selectedNetwork === "all" || alert.networkId === selectedNetwork;
+    const matchesSeverity = selectedSeverity === "all" || alert.severity === selectedSeverity;
 
-    return matchesSearch && matchesOrg && matchesNetwork && matchesSeverity
+    return matchesSearch && matchesOrg && matchesNetwork && matchesSeverity;
   })
 
+  // Memoized statistics for alerts (critical, warning, info, total).
   const alertStats = {
     critical: alerts.filter((a) => a.severity === "critical").length,
     warning: alerts.filter((a) => a.severity === "warning").length,
     info: alerts.filter((a) => a.severity === "info").length,
     total: alerts.length,
   }
+
+  /**
+   * Sets the selected alert to be displayed in the details dialog.
+   * @param alert - The alert object to display.
+   */
+  const handleViewDetails = (alert: Alert) => {
+    setSelectedAlert(alert)
+  }
+
+  /**
+   * Opens the API key dialog when the connect button in the AlertsTable (empty state) is clicked.
+   */
+  const handleTableConnectClick = () => {
+    setShowApiKeyDialog(true);
+  }
+
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 dark:from-slate-900 dark:to-slate-800 p-4">
@@ -296,363 +341,101 @@ export default function MerakiDashboard() {
           <div className="absolute top-0 right-0">
             <ThemeToggle />
           </div>
-          <div className="flex items-center justify-center gap-2">
-            <Shield className="h-8 w-8 text-blue-600" />
-            <h1 className="text-4xl font-bold text-slate-800 dark:text-slate-100">Meraki Dashboard</h1>
+          <div className="flex items-center justify-center gap-3">
+            <div className="relative">
+              <div className="w-12 h-12 bg-gradient-to-br from-blue-600 to-blue-800 rounded-xl flex items-center justify-center shadow-lg">
+                <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+                </svg>
+              </div>
+              <div className={`absolute -top-1 -right-1 w-4 h-4 ${isConnected ? 'bg-green-500' : 'bg-red-500'} rounded-full border-2 border-white ${isConnected ? 'animate-pulse' : ''}`}></div>
+            </div>
+            <div className="text-center">
+              <h1 className="text-4xl font-bold text-slate-800 dark:text-slate-100 tracking-tight">Meraki Dashboard</h1>
+              <div className="text-sm text-blue-600 dark:text-blue-400 font-medium tracking-wider">
+                NETWORK SECURITY
+              </div>
+            </div>
           </div>
           <p className="text-slate-600 dark:text-slate-400">Monitor de Alertas y Estado de Red</p>
         </div>
 
-        {/* Connection Status & Controls */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Wifi className="h-5 w-5" />
-              Panel de Control
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="flex flex-wrap items-center gap-4">
-              <Button onClick={connectToMeraki} disabled={isLoading} className="bg-green-600 hover:bg-green-700">
-                {isLoading ? <RefreshCw className="h-4 w-4 animate-spin mr-2" /> : <Wifi className="h-4 w-4 mr-2" />}
-                {isConnected ? "Reconectar" : "Conectar"}
-              </Button>
+        <ControlPanel
+          isConnected={isConnected}
+          isLoading={isLoading}
+          connectToMeraki={connectToMeraki}
+          disconnectFromMeraki={disconnectFromMeraki}
+          changeApiKey={changeApiKey}
+          refreshAlerts={refreshAlerts}
+          autoRefresh={autoRefresh}
+          startAutoRefresh={startAutoRefresh}
+          stopAutoRefresh={stopAutoRefresh}
+          exportAlerts={exportAlerts}
+          clearAlerts={clearAlerts}
+          alertsLength={alerts.length}
+        />
 
-              {isConnected && (
-                <Button onClick={changeApiKey} variant="outline" size="sm">
-                  Cambiar API Key
-                </Button>
-              )}
+        {isConnected && <StatsCards alertStats={alertStats} />}
 
-              {isConnected && (
-                <Button
-                  onClick={disconnectFromMeraki}
-                  variant="outline"
-                  size="sm"
-                  className="text-red-600 hover:text-red-700"
-                >
-                  Desconectar
-                </Button>
-              )}
+        {isConnected && (
+          <AlertFilters
+            searchTerm={searchTerm}
+            setSearchTerm={setSearchTerm}
+            selectedOrg={selectedOrg}
+            setSelectedOrg={setSelectedOrg}
+            organizations={organizations}
+            selectedNetwork={selectedNetwork}
+            setSelectedNetwork={setSelectedNetwork}
+            networks={networks.filter(n => selectedOrg === 'all' || organizations.find(o => o.name === selectedOrg && n.organizationId === o.id))} // Pass filtered networks or all
+            selectedSeverity={selectedSeverity}
+            setSelectedSeverity={setSelectedSeverity}
+          />
+        )}
 
-              <Button onClick={refreshAlerts} disabled={!isConnected || isLoading} variant="outline">
-                <RefreshCw className="h-4 w-4 mr-2" />
-                Actualizar
-              </Button>
+        <AlertsTable
+          isConnected={isConnected}
+          filteredAlerts={filteredAlerts}
+          alertsCount={alerts.length}
+          getSeverityIcon={getSeverityIcon}
+          getSeverityBadge={getSeverityBadge}
+          onViewDetails={handleViewDetails}
+          onConnectClick={handleTableConnectClick}
+        />
 
-              <Button onClick={exportAlerts} disabled={alerts.length === 0} variant="outline">
-                <Download className="h-4 w-4 mr-2" />
-                Exportar
-              </Button>
+        <ApiKeyDialog
+          showApiKeyDialog={showApiKeyDialog}
+          setShowApiKeyDialog={setShowApiKeyDialog}
+          tempApiKey={tempApiKey}
+          setTempApiKey={setTempApiKey}
+          handleApiKeySubmit={handleApiKeySubmit}
+          apiKey={apiKey}
+        />
 
-              <Button onClick={clearAlerts} variant="outline" className="text-red-600 hover:text-red-700">
-                <Trash2 className="h-4 w-4 mr-2" />
-                Limpiar
-              </Button>
-
-              <div className="ml-auto flex items-center gap-2">
-                {apiKey && <div className="text-xs text-muted-foreground">API: {apiKey.substring(0, 8)}...</div>}
-                <Badge variant={isConnected ? "default" : "secondary"}>
-                  {isConnected ? "Conectado" : "Desconectado"}
-                </Badge>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Statistics */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Críticas</CardTitle>
-              <AlertTriangle className="h-4 w-4 text-red-500" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold text-red-600">{alertStats.critical}</div>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Advertencias</CardTitle>
-              <Info className="h-4 w-4 text-yellow-500" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold text-yellow-600">{alertStats.warning}</div>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Información</CardTitle>
-              <CheckCircle className="h-4 w-4 text-blue-500" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold text-blue-600">{alertStats.info}</div>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Total</CardTitle>
-              <Activity className="h-4 w-4 text-slate-500" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold text-slate-700">{alertStats.total}</div>
-            </CardContent>
-          </Card>
-        </div>
-
-        {/* Filters */}
-        <Card>
-          <CardHeader>
-            <CardTitle>Filtros</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-              <Input
-                placeholder="Buscar alertas..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-              />
-
-              <Select value={selectedOrg} onValueChange={setSelectedOrg}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Organización" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">Todas las organizaciones</SelectItem>
-                  {organizations.map((org) => (
-                    <SelectItem key={org.id} value={org.name}>
-                      {org.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-
-              <Select value={selectedNetwork} onValueChange={setSelectedNetwork}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Red" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">Todas las redes</SelectItem>
-                  {networks.map((network) => (
-                    <SelectItem key={network.id} value={network.id}>
-                      {network.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-
-              <Select value={selectedSeverity} onValueChange={setSelectedSeverity}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Severidad" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">Todas las severidades</SelectItem>
-                  <SelectItem value="critical">Crítica</SelectItem>
-                  <SelectItem value="warning">Advertencia</SelectItem>
-                  <SelectItem value="info">Información</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Alerts Table */}
-        <Card>
-          <CardHeader>
-            <CardTitle>Alertas Activas</CardTitle>
-            <CardDescription>
-              Mostrando {filteredAlerts.length} de {alerts.length} alertas
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            {!isConnected ? (
-              <div className="text-center py-8">
-                <Wifi className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
-                <h3 className="text-lg font-semibold mb-2">No conectado</h3>
-                <p className="text-muted-foreground mb-4">Conecta con tu API Key de Meraki para ver las alertas</p>
-                <Button onClick={() => setShowApiKeyDialog(true)}>
-                  <Wifi className="h-4 w-4 mr-2" />
-                  Conectar ahora
-                </Button>
-              </div>
-            ) : filteredAlerts.length === 0 ? (
-              <div className="text-center py-8">
-                <CheckCircle className="h-12 w-12 text-green-500 mx-auto mb-4" />
-                <h3 className="text-lg font-semibold mb-2">No hay alertas</h3>
-                <p className="text-muted-foreground">
-                  No se encontraron alertas que coincidan con los filtros actuales
-                </p>
-              </div>
-            ) : (
-              <div className="rounded-md border">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Severidad</TableHead>
-                      <TableHead>Tipo</TableHead>
-                      <TableHead>Mensaje</TableHead>
-                      <TableHead>Red</TableHead>
-                      <TableHead>Dispositivo</TableHead>
-                      <TableHead>Estado</TableHead>
-                      <TableHead>Fecha</TableHead>
-                      <TableHead>Acciones</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {filteredAlerts.map((alert) => (
-                      <TableRow key={alert.id}>
-                        <TableCell>
-                          <div className="flex items-center gap-2">
-                            {getSeverityIcon(alert.severity)}
-                            {getSeverityBadge(alert.severity)}
-                          </div>
-                        </TableCell>
-                        <TableCell className="font-medium">
-                          {alert.type.replace("_", " ").replace(/\b\w/g, (l) => l.toUpperCase())}
-                        </TableCell>
-                        <TableCell className="max-w-xs truncate">{alert.message}</TableCell>
-                        <TableCell>{alert.networkName}</TableCell>
-                        <TableCell className="font-mono text-sm">{alert.deviceSerial}</TableCell>
-                        <TableCell>
-                          <Badge variant={alert.status === "active" ? "destructive" : "secondary"}>
-                            {alert.status.toUpperCase()}
-                          </Badge>
-                        </TableCell>
-                        <TableCell>{new Date(alert.timestamp).toLocaleString()}</TableCell>
-                        <TableCell>
-                          <Dialog>
-                            <DialogTrigger asChild>
-                              <Button variant="outline" size="sm" onClick={() => setSelectedAlert(alert)}>
-                                Ver Detalles
-                              </Button>
-                            </DialogTrigger>
-                            <DialogContent className="max-w-2xl">
-                              <DialogHeader>
-                                <DialogTitle>Detalles de la Alerta</DialogTitle>
-                                <DialogDescription>Información completa de la alerta seleccionada</DialogDescription>
-                              </DialogHeader>
-                              {selectedAlert && (
-                                <div className="space-y-4">
-                                  <div className="grid grid-cols-2 gap-4">
-                                    <div>
-                                      <label className="text-sm font-medium">ID de Alerta</label>
-                                      <p className="text-sm text-muted-foreground">{selectedAlert.id}</p>
-                                    </div>
-                                    <div>
-                                      <label className="text-sm font-medium">Tipo</label>
-                                      <p className="text-sm text-muted-foreground">{selectedAlert.type}</p>
-                                    </div>
-                                    <div>
-                                      <label className="text-sm font-medium">Severidad</label>
-                                      <div className="flex items-center gap-2 mt-1">
-                                        {getSeverityIcon(selectedAlert.severity)}
-                                        {getSeverityBadge(selectedAlert.severity)}
-                                      </div>
-                                    </div>
-                                    <div>
-                                      <label className="text-sm font-medium">Estado</label>
-                                      <p className="text-sm text-muted-foreground">{selectedAlert.status}</p>
-                                    </div>
-                                  </div>
-                                  <div>
-                                    <label className="text-sm font-medium">Mensaje</label>
-                                    <p className="text-sm text-muted-foreground">{selectedAlert.message}</p>
-                                  </div>
-                                  <div className="grid grid-cols-2 gap-4">
-                                    <div>
-                                      <label className="text-sm font-medium">Red</label>
-                                      <p className="text-sm text-muted-foreground">{selectedAlert.networkName}</p>
-                                    </div>
-                                    <div>
-                                      <label className="text-sm font-medium">Dispositivo</label>
-                                      <p className="text-sm text-muted-foreground font-mono">
-                                        {selectedAlert.deviceSerial}
-                                      </p>
-                                    </div>
-                                  </div>
-                                  <div>
-                                    <label className="text-sm font-medium">Fecha y Hora</label>
-                                    <p className="text-sm text-muted-foreground">
-                                      {new Date(selectedAlert.timestamp).toLocaleString()}
-                                    </p>
-                                  </div>
-                                </div>
-                              )}
-                            </DialogContent>
-                          </Dialog>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-        {/* API Key Dialog */}
-        <Dialog open={showApiKeyDialog} onOpenChange={setShowApiKeyDialog}>
-          <DialogContent className="sm:max-w-md">
-            <DialogHeader>
-              <DialogTitle className="flex items-center gap-2">
-                <Shield className="h-5 w-5" />
-                Configurar API Key de Meraki
-              </DialogTitle>
-              <DialogDescription>
-                Ingresa tu API Key de Meraki Dashboard para conectarte. Puedes encontrarla en tu perfil de Meraki
-                Dashboard.
-              </DialogDescription>
-            </DialogHeader>
-            <div className="space-y-4">
-              <div className="space-y-2">
-                <label htmlFor="apikey" className="text-sm font-medium">
-                  API Key
-                </label>
-                <Input
-                  id="apikey"
-                  type="password"
-                  placeholder="Ingresa tu API Key de Meraki..."
-                  value={tempApiKey}
-                  onChange={(e) => setTempApiKey(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      handleApiKeySubmit()
-                    }
-                  }}
-                />
-                <p className="text-xs text-muted-foreground">
-                  El API Key debe tener al menos 20 caracteres y se mantendrá seguro en tu sesión.
-                </p>
-              </div>
-
-              {apiKey && (
-                <div className="p-3 bg-muted rounded-lg">
-                  <p className="text-sm font-medium mb-1">API Key Actual:</p>
-                  <p className="text-xs font-mono text-muted-foreground">
-                    {apiKey.substring(0, 12)}...{apiKey.substring(apiKey.length - 4)}
-                  </p>
+        {/* Alert Details Dialog (remains in page.tsx as it uses selectedAlert state) */}
+        {selectedAlert && (
+          <Dialog open={selectedAlert !== null} onOpenChange={() => setSelectedAlert(null)}>
+            <DialogContent className="max-w-2xl">
+              <DialogHeader>
+                <DialogTitle>Detalles de la Alerta</DialogTitle>
+                <DialogDescription>Información completa de la alerta seleccionada</DialogDescription>
+              </DialogHeader>
+              <div className="space-y-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <div><label className="text-sm font-medium">ID de Alerta</label><p className="text-sm text-muted-foreground">{selectedAlert.id}</p></div>
+                  <div><label className="text-sm font-medium">Tipo</label><p className="text-sm text-muted-foreground">{selectedAlert.type.replace("_", " ").replace(/\b\w/g, (l) => l.toUpperCase())}</p></div>
+                  <div><label className="text-sm font-medium">Severidad</label><div className="flex items-center gap-2 mt-1">{getSeverityIcon(selectedAlert.severity)}{getSeverityBadge(selectedAlert.severity)}</div></div>
+                  <div><label className="text-sm font-medium">Estado</label><p className="text-sm text-muted-foreground">{selectedAlert.status.toUpperCase()}</p></div>
                 </div>
-              )}
-
-              <div className="flex justify-end gap-2">
-                <Button
-                  variant="outline"
-                  onClick={() => {
-                    setShowApiKeyDialog(false)
-                    setTempApiKey("")
-                  }}
-                >
-                  Cancelar
-                </Button>
-                <Button onClick={handleApiKeySubmit} disabled={!tempApiKey.trim()}>
-                  {apiKey ? "Actualizar" : "Conectar"}
-                </Button>
+                <div><label className="text-sm font-medium">Mensaje</label><p className="text-sm text-muted-foreground">{selectedAlert.message}</p></div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div><label className="text-sm font-medium">Red</label><p className="text-sm text-muted-foreground">{selectedAlert.networkName}</p></div>
+                  <div><label className="text-sm font-medium">Dispositivo</label><p className="text-sm text-muted-foreground font-mono">{selectedAlert.deviceSerial}</p></div>
+                </div>
+                <div><label className="text-sm font-medium">Fecha y Hora</label><p className="text-sm text-muted-foreground">{new Date(selectedAlert.timestamp).toLocaleString()}</p></div>
               </div>
-            </div>
-          </DialogContent>
-        </Dialog>
+            </DialogContent>
+          </Dialog>
+        )}
       </div>
     </div>
   )
