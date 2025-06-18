@@ -18,7 +18,7 @@ import {
 import { AlertTriangle, CheckCircle, Info, RefreshCw, Download, Trash2, Wifi, Shield, Activity } from "lucide-react"
 import { toast } from "@/hooks/use-toast"
 import { ThemeToggle } from "@/components/theme-toggle"
-import { validateApiKey, getNetworks, getAlerts } from "@/lib/meraki-api"
+import { validateApiKey, getNetworks, getAlerts, getAllHistoryAlerts } from "@/lib/meraki-api"
 
 interface Alert {
   id: string
@@ -54,7 +54,8 @@ export default function MerakiDashboard() {
   const [selectedSeverity, setSelectedSeverity] = useState<string>("all")
   const [searchTerm, setSearchTerm] = useState("")
   const [selectedAlert, setSelectedAlert] = useState<Alert | null>(null)
-  const [selectedTimespan, setSelectedTimespan] = useState<number>(604800) // 1 semana por defecto
+  const [selectedTimespan, setSelectedTimespan] = useState<number>(7776000) // 90 días por defecto
+  const [loadFullHistory, setLoadFullHistory] = useState(false)
 
   const [apiKey, setApiKey] = useState<string>("")
   const [showApiKeyDialog, setShowApiKeyDialog] = useState(false)
@@ -100,7 +101,10 @@ export default function MerakiDashboard() {
       // Obtener alertas de todas las organizaciones
       const allAlerts: Alert[] = []
       for (const org of organizations) {
-        const alertsResult = await getAlerts(apiKey, org.id, selectedTimespan)
+        const alertsResult = loadFullHistory
+          ? await getAllHistoryAlerts(apiKey, org.id)
+          : await getAlerts(apiKey, org.id, selectedTimespan)
+
         if (alertsResult.success) {
           const orgAlerts = alertsResult.data.map((alert) => ({
             id: alert.id,
@@ -121,7 +125,7 @@ export default function MerakiDashboard() {
 
       toast({
         title: "Conexión exitosa",
-        description: `Conectado a Meraki API. Cargadas ${organizations.length} organizaciones, ${allNetworks.length} redes y ${allAlerts.length} alertas.`,
+        description: `Conectado a Meraki API. Cargadas ${organizations.length} organizaciones, ${allNetworks.length} redes y ${allAlerts.length} alertas${loadFullHistory ? " (historial completo)" : ""}.`,
       })
     } catch (error) {
       toast({
@@ -166,7 +170,10 @@ export default function MerakiDashboard() {
 
       // Obtener alertas actualizadas de todas las organizaciones
       for (const org of organizations) {
-        const alertsResult = await getAlerts(apiKey, org.id, selectedTimespan)
+        const alertsResult = loadFullHistory
+          ? await getAllHistoryAlerts(apiKey, org.id)
+          : await getAlerts(apiKey, org.id, selectedTimespan)
+
         if (alertsResult.success) {
           const orgAlerts = alertsResult.data.map((alert) => ({
             id: alert.id,
@@ -746,8 +753,15 @@ export default function MerakiDashboard() {
               </Select>
 
               <Select
-                value={selectedTimespan.toString()}
-                onValueChange={(value) => setSelectedTimespan(Number.parseInt(value))}
+                value={loadFullHistory ? "full" : selectedTimespan.toString()}
+                onValueChange={(value) => {
+                  if (value === "full") {
+                    setLoadFullHistory(true)
+                  } else {
+                    setLoadFullHistory(false)
+                    setSelectedTimespan(Number.parseInt(value))
+                  }
+                }}
               >
                 <SelectTrigger>
                   <SelectValue placeholder="Período" />
@@ -758,6 +772,8 @@ export default function MerakiDashboard() {
                   <SelectItem value="259200">Últimos 3 días</SelectItem>
                   <SelectItem value="604800">Última semana</SelectItem>
                   <SelectItem value="2592000">Último mes</SelectItem>
+                  <SelectItem value="7776000">Últimos 3 meses</SelectItem>
+                  <SelectItem value="full">Todo el historial disponible</SelectItem>
                 </SelectContent>
               </Select>
             </div>

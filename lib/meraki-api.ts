@@ -117,7 +117,7 @@ export async function getNetworks(apiKey: string, organizationId: string) {
   }
 }
 
-export async function getAlerts(apiKey: string, organizationId: string, timespan = 604800) {
+export async function getAlerts(apiKey: string, organizationId: string, timespan = 7776000) {
   try {
     // Obtener alertas de la organización
     const response = await fetch(
@@ -162,7 +162,7 @@ export async function getAlerts(apiKey: string, organizationId: string, timespan
   }
 }
 
-export async function getNetworkAlerts(apiKey: string, networkId: string, timespan = 604800) {
+export async function getNetworkAlerts(apiKey: string, networkId: string, timespan = 7776000) {
   try {
     const response = await fetch(`${MERAKI_API_BASE}/networks/${networkId}/alerts/history?timespan=${timespan}`, {
       headers: {
@@ -193,6 +193,68 @@ export async function getNetworkAlerts(apiKey: string, networkId: string, timesp
     return {
       success: true,
       data: alerts,
+    }
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Error desconocido",
+    }
+  }
+}
+
+export async function getAllHistoryAlerts(apiKey: string, organizationId: string) {
+  try {
+    // Meraki permite máximo 90 días en una sola consulta
+    // Para obtener más historial, necesitamos hacer múltiples consultas
+    const maxTimespan = 7776000 // 90 días
+    const allAlerts: MerakiAlert[] = []
+
+    // Obtener alertas de los últimos 90 días
+    let currentDate = new Date()
+    let endDate = new Date(currentDate.getTime() - maxTimespan * 1000)
+
+    // Hacer hasta 4 consultas para obtener ~1 año de historial
+    for (let i = 0; i < 4; i++) {
+      const t0 = Math.floor(endDate.getTime() / 1000)
+      const t1 = Math.floor(currentDate.getTime() / 1000)
+
+      const response = await fetch(
+        `${MERAKI_API_BASE}/organizations/${organizationId}/alerts/history?t0=${t0}&t1=${t1}`,
+        {
+          headers: {
+            "X-Cisco-Meraki-API-Key": apiKey,
+            "Content-Type": "application/json",
+          },
+        },
+      )
+
+      if (response.ok) {
+        const alertsData = await response.json()
+
+        const alerts: MerakiAlert[] = alertsData.map((alert: any) => ({
+          id: alert.id || `alert_${Date.now()}_${Math.random()}`,
+          type: alert.type || "unknown",
+          message: alert.message || alert.details || "Sin mensaje",
+          timestamp: alert.occurredAt || alert.timestamp || new Date().toISOString(),
+          networkId: alert.networkId || "",
+          networkName: alert.networkName || "Red desconocida",
+          deviceSerial: alert.deviceSerial || alert.device?.serial || "",
+          deviceName: alert.deviceName || alert.device?.name || "",
+          severity: mapSeverity(alert.type, alert.category),
+          status: alert.dismissed ? "resolved" : "active",
+        }))
+
+        allAlerts.push(...alerts)
+      }
+
+      // Preparar para la siguiente iteración
+      currentDate = new Date(endDate)
+      endDate = new Date(currentDate.getTime() - maxTimespan * 1000)
+    }
+
+    return {
+      success: true,
+      data: allAlerts,
     }
   } catch (error) {
     return {
