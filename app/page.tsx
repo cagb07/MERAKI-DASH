@@ -18,7 +18,7 @@ import {
 import { AlertTriangle, CheckCircle, Info, RefreshCw, Download, Trash2, Wifi, Shield, Activity } from "lucide-react"
 import { toast } from "@/hooks/use-toast"
 import { ThemeToggle } from "@/components/theme-toggle"
-import { validateApiKey, getNetworks, getAlerts, getAllHistoryAlerts } from "@/lib/meraki-api"
+import { validateApiKey, getNetworks, getAlerts, getAllHistoryAlerts, generateTestAlerts } from "@/lib/meraki-api"
 
 interface Alert {
   id: string
@@ -56,6 +56,7 @@ export default function MerakiDashboard() {
   const [selectedAlert, setSelectedAlert] = useState<Alert | null>(null)
   const [selectedTimespan, setSelectedTimespan] = useState<number>(7776000) // 90 días por defecto
   const [loadFullHistory, setLoadFullHistory] = useState(false)
+  const [useTestData, setUseTestData] = useState(false)
 
   const [apiKey, setApiKey] = useState<string>("")
   const [showApiKeyDialog, setShowApiKeyDialog] = useState(false)
@@ -100,12 +101,15 @@ export default function MerakiDashboard() {
 
       // Obtener alertas de todas las organizaciones
       const allAlerts: Alert[] = []
+      let hasRealAlerts = false
+
       for (const org of organizations) {
         const alertsResult = loadFullHistory
           ? await getAllHistoryAlerts(apiKey, org.id)
           : await getAlerts(apiKey, org.id, selectedTimespan)
 
-        if (alertsResult.success) {
+        if (alertsResult.success && alertsResult.data.length > 0) {
+          hasRealAlerts = true
           const orgAlerts = alertsResult.data.map((alert) => ({
             id: alert.id,
             type: alert.type,
@@ -120,12 +124,36 @@ export default function MerakiDashboard() {
           allAlerts.push(...orgAlerts)
         }
       }
+
+      // Si no hay alertas reales, generar alertas de prueba
+      if (!hasRealAlerts) {
+        console.log("No se encontraron alertas reales, generando alertas de prueba...")
+        const networkIds = allNetworks.map((n) => n.id)
+        const testAlerts = await generateTestAlerts(organizations[0]?.id || "test_org", networkIds)
+        allAlerts.push(
+          ...testAlerts.map((alert) => ({
+            id: alert.id,
+            type: alert.type,
+            severity: alert.severity,
+            message: alert.message,
+            timestamp: alert.timestamp,
+            networkId: alert.networkId,
+            networkName: alert.networkName,
+            deviceSerial: alert.deviceSerial,
+            status: alert.status,
+          })),
+        )
+        setUseTestData(true)
+      } else {
+        setUseTestData(false)
+      }
+
       setAlerts(allAlerts)
       setIsConnected(true)
 
       toast({
         title: "Conexión exitosa",
-        description: `Conectado a Meraki API. Cargadas ${organizations.length} organizaciones, ${allNetworks.length} redes y ${allAlerts.length} alertas${loadFullHistory ? " (historial completo)" : ""}.`,
+        description: `Conectado a Meraki API. Cargadas ${organizations.length} organizaciones, ${allNetworks.length} redes y ${allAlerts.length} alertas${useTestData ? " (datos de prueba)" : ""}${loadFullHistory ? " (historial completo)" : ""}.`,
       })
     } catch (error) {
       toast({
@@ -148,6 +176,7 @@ export default function MerakiDashboard() {
     setSelectedNetwork("all")
     setSelectedSeverity("all")
     setSearchTerm("")
+    setUseTestData(false)
     stopAutoRefresh()
     setLastAlertCount(0)
     toast({
@@ -167,6 +196,7 @@ export default function MerakiDashboard() {
     setIsLoading(true)
     try {
       const allAlerts: Alert[] = []
+      let hasRealAlerts = false
 
       // Obtener alertas actualizadas de todas las organizaciones
       for (const org of organizations) {
@@ -174,7 +204,8 @@ export default function MerakiDashboard() {
           ? await getAllHistoryAlerts(apiKey, org.id)
           : await getAlerts(apiKey, org.id, selectedTimespan)
 
-        if (alertsResult.success) {
+        if (alertsResult.success && alertsResult.data.length > 0) {
+          hasRealAlerts = true
           const orgAlerts = alertsResult.data.map((alert) => ({
             id: alert.id,
             type: alert.type,
@@ -190,10 +221,29 @@ export default function MerakiDashboard() {
         }
       }
 
+      // Si no hay alertas reales, mantener las de prueba o generar nuevas
+      if (!hasRealAlerts && useTestData) {
+        const networkIds = networks.map((n) => n.id)
+        const testAlerts = await generateTestAlerts(organizations[0]?.id || "test_org", networkIds)
+        allAlerts.push(
+          ...testAlerts.map((alert) => ({
+            id: alert.id,
+            type: alert.type,
+            severity: alert.severity,
+            message: alert.message,
+            timestamp: alert.timestamp,
+            networkId: alert.networkId,
+            networkName: alert.networkName,
+            deviceSerial: alert.deviceSerial,
+            status: alert.status,
+          })),
+        )
+      }
+
       setAlerts(allAlerts)
       toast({
         title: "Alertas actualizadas",
-        description: `Se han cargado ${allAlerts.length} alertas desde Meraki API`,
+        description: `Se han cargado ${allAlerts.length} alertas${useTestData ? " (datos de prueba)" : ""} desde Meraki API`,
       })
     } catch (error) {
       toast({
@@ -531,6 +581,11 @@ export default function MerakiDashboard() {
                 <Badge variant={isConnected ? "default" : "secondary"}>
                   {isConnected ? (autoRefresh ? "🔴 En Vivo" : "Conectado") : "Desconectado"}
                 </Badge>
+                {useTestData && (
+                  <Badge variant="outline" className="text-orange-600">
+                    Datos de Prueba
+                  </Badge>
+                )}
               </div>
             </div>
           </CardContent>
@@ -944,7 +999,7 @@ export default function MerakiDashboard() {
                   }}
                 />
                 <p className="text-xs text-muted-foreground">
-                  El API Key debe tener al menos 20 caracteres y se mantendrá seguro en tu sesión.
+                  El API Key debe tener exactamente 40 caracteres hexadecimales y se mantendrá seguro en tu sesión.
                 </p>
               </div>
 
