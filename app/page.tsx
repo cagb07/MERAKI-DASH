@@ -66,6 +66,9 @@ export default function MerakiDashboard() {
   const [refreshInterval, setRefreshInterval] = useState<NodeJS.Timeout | null>(null)
   const [lastAlertCount, setLastAlertCount] = useState(0)
 
+  const [currentPage, setCurrentPage] = useState(1)
+  const [itemsPerPage, setItemsPerPage] = useState(10)
+
   const connectToMeraki = async () => {
     if (!apiKey) {
       setShowApiKeyDialog(true)
@@ -501,6 +504,17 @@ export default function MerakiDashboard() {
     return matchesSearch && matchesOrg && matchesNetwork && matchesSeverity
   })
 
+  // Pagination calculations
+  const totalPages = Math.ceil(filteredAlerts.length / itemsPerPage)
+  const startIndex = (currentPage - 1) * itemsPerPage
+  const endIndex = startIndex + itemsPerPage
+  const paginatedAlerts = filteredAlerts.slice(startIndex, endIndex)
+
+  // Reset to first page when filters change
+  useEffect(() => {
+    setCurrentPage(1)
+  }, [searchTerm, selectedOrg, selectedNetwork, selectedSeverity])
+
   const alertStats = {
     critical: alerts.filter((a) => a.severity === "critical").length,
     warning: alerts.filter((a) => a.severity === "warning").length,
@@ -900,7 +914,8 @@ export default function MerakiDashboard() {
           <CardHeader>
             <CardTitle>Alertas Activas</CardTitle>
             <CardDescription>
-              Mostrando {filteredAlerts.length} de {alerts.length} alertas
+              Mostrando {paginatedAlerts.length} de {filteredAlerts.length} alertas (Página {currentPage} de{" "}
+              {totalPages})
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -942,108 +957,203 @@ export default function MerakiDashboard() {
                 <p className="text-sm text-muted-foreground mt-2">Total de alertas disponibles: {alerts.length}</p>
               </div>
             ) : (
-              <div className="rounded-md border">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Severidad</TableHead>
-                      <TableHead>Tipo</TableHead>
-                      <TableHead>Mensaje</TableHead>
-                      <TableHead>Red</TableHead>
-                      <TableHead>Dispositivo</TableHead>
-                      <TableHead>Estado</TableHead>
-                      <TableHead>Fecha</TableHead>
-                      <TableHead>Acciones</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {filteredAlerts.map((alert) => (
-                      <TableRow key={alert.id}>
-                        <TableCell>
-                          <div className="flex items-center gap-2">
-                            {getSeverityIcon(alert.severity)}
-                            {getSeverityBadge(alert.severity)}
-                          </div>
-                        </TableCell>
-                        <TableCell className="font-medium">
-                          {alert.type.replace("_", " ").replace(/\b\w/g, (l) => l.toUpperCase())}
-                        </TableCell>
-                        <TableCell className="max-w-xs truncate">{alert.message}</TableCell>
-                        <TableCell>{alert.networkName}</TableCell>
-                        <TableCell className="font-mono text-sm">{alert.deviceSerial}</TableCell>
-                        <TableCell>
-                          <Badge variant={alert.status === "active" ? "destructive" : "secondary"}>
-                            {alert.status.toUpperCase()}
-                          </Badge>
-                        </TableCell>
-                        <TableCell>{new Date(alert.timestamp).toLocaleString()}</TableCell>
-                        <TableCell>
-                          <Dialog>
-                            <DialogTrigger asChild>
-                              <Button variant="outline" size="sm" onClick={() => setSelectedAlert(alert)}>
-                                Ver Detalles
-                              </Button>
-                            </DialogTrigger>
-                            <DialogContent className="max-w-2xl">
-                              <DialogHeader>
-                                <DialogTitle>Detalles de la Alerta</DialogTitle>
-                                <DialogDescription>Información completa de la alerta seleccionada</DialogDescription>
-                              </DialogHeader>
-                              {selectedAlert && (
-                                <div className="space-y-4">
-                                  <div className="grid grid-cols-2 gap-4">
-                                    <div>
-                                      <label className="text-sm font-medium">ID de Alerta</label>
-                                      <p className="text-sm text-muted-foreground">{selectedAlert.id}</p>
-                                    </div>
-                                    <div>
-                                      <label className="text-sm font-medium">Tipo</label>
-                                      <p className="text-sm text-muted-foreground">{selectedAlert.type}</p>
-                                    </div>
-                                    <div>
-                                      <label className="text-sm font-medium">Severidad</label>
-                                      <div className="flex items-center gap-2 mt-1">
-                                        {getSeverityIcon(selectedAlert.severity)}
-                                        {getSeverityBadge(selectedAlert.severity)}
+              <>
+                {/* Pagination Controls */}
+                {filteredAlerts.length > 0 && (
+                  <div className="flex items-center justify-between mb-4">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm text-muted-foreground">
+                        Mostrando {startIndex + 1} a {Math.min(endIndex, filteredAlerts.length)} de{" "}
+                        {filteredAlerts.length} alertas
+                      </span>
+                      <Select
+                        value={itemsPerPage.toString()}
+                        onValueChange={(value) => {
+                          setItemsPerPage(Number(value))
+                          setCurrentPage(1)
+                        }}
+                      >
+                        <SelectTrigger className="w-20">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="5">5</SelectItem>
+                          <SelectItem value="10">10</SelectItem>
+                          <SelectItem value="25">25</SelectItem>
+                          <SelectItem value="50">50</SelectItem>
+                          <SelectItem value="100">100</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <span className="text-sm text-muted-foreground">por página</span>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setCurrentPage(1)}
+                        disabled={currentPage === 1}
+                      >
+                        Primera
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setCurrentPage(currentPage - 1)}
+                        disabled={currentPage === 1}
+                      >
+                        Anterior
+                      </Button>
+
+                      <div className="flex items-center gap-1">
+                        {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+                          let pageNum
+                          if (totalPages <= 5) {
+                            pageNum = i + 1
+                          } else if (currentPage <= 3) {
+                            pageNum = i + 1
+                          } else if (currentPage >= totalPages - 2) {
+                            pageNum = totalPages - 4 + i
+                          } else {
+                            pageNum = currentPage - 2 + i
+                          }
+
+                          return (
+                            <Button
+                              key={pageNum}
+                              variant={currentPage === pageNum ? "default" : "outline"}
+                              size="sm"
+                              className="w-8 h-8 p-0"
+                              onClick={() => setCurrentPage(pageNum)}
+                            >
+                              {pageNum}
+                            </Button>
+                          )
+                        })}
+                      </div>
+
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setCurrentPage(currentPage + 1)}
+                        disabled={currentPage === totalPages}
+                      >
+                        Siguiente
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setCurrentPage(totalPages)}
+                        disabled={currentPage === totalPages}
+                      >
+                        Última
+                      </Button>
+                    </div>
+                  </div>
+                )}
+                <div className="rounded-md border">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Severidad</TableHead>
+                        <TableHead>Tipo</TableHead>
+                        <TableHead>Mensaje</TableHead>
+                        <TableHead>Red</TableHead>
+                        <TableHead>Dispositivo</TableHead>
+                        <TableHead>Estado</TableHead>
+                        <TableHead>Fecha</TableHead>
+                        <TableHead>Acciones</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {paginatedAlerts.map((alert) => (
+                        <TableRow key={alert.id}>
+                          <TableCell>
+                            <div className="flex items-center gap-2">
+                              {getSeverityIcon(alert.severity)}
+                              {getSeverityBadge(alert.severity)}
+                            </div>
+                          </TableCell>
+                          <TableCell className="font-medium">
+                            {alert.type.replace("_", " ").replace(/\b\w/g, (l) => l.toUpperCase())}
+                          </TableCell>
+                          <TableCell className="max-w-xs truncate">{alert.message}</TableCell>
+                          <TableCell>{alert.networkName}</TableCell>
+                          <TableCell className="font-mono text-sm">{alert.deviceSerial}</TableCell>
+                          <TableCell>
+                            <Badge variant={alert.status === "active" ? "destructive" : "secondary"}>
+                              {alert.status.toUpperCase()}
+                            </Badge>
+                          </TableCell>
+                          <TableCell>{new Date(alert.timestamp).toLocaleString()}</TableCell>
+                          <TableCell>
+                            <Dialog>
+                              <DialogTrigger asChild>
+                                <Button variant="outline" size="sm" onClick={() => setSelectedAlert(alert)}>
+                                  Ver Detalles
+                                </Button>
+                              </DialogTrigger>
+                              <DialogContent className="max-w-2xl">
+                                <DialogHeader>
+                                  <DialogTitle>Detalles de la Alerta</DialogTitle>
+                                  <DialogDescription>Información completa de la alerta seleccionada</DialogDescription>
+                                </DialogHeader>
+                                {selectedAlert && (
+                                  <div className="space-y-4">
+                                    <div className="grid grid-cols-2 gap-4">
+                                      <div>
+                                        <label className="text-sm font-medium">ID de Alerta</label>
+                                        <p className="text-sm text-muted-foreground">{selectedAlert.id}</p>
+                                      </div>
+                                      <div>
+                                        <label className="text-sm font-medium">Tipo</label>
+                                        <p className="text-sm text-muted-foreground">{selectedAlert.type}</p>
+                                      </div>
+                                      <div>
+                                        <label className="text-sm font-medium">Severidad</label>
+                                        <div className="flex items-center gap-2 mt-1">
+                                          {getSeverityIcon(selectedAlert.severity)}
+                                          {getSeverityBadge(selectedAlert.severity)}
+                                        </div>
+                                      </div>
+                                      <div>
+                                        <label className="text-sm font-medium">Estado</label>
+                                        <p className="text-sm text-muted-foreground">{selectedAlert.status}</p>
                                       </div>
                                     </div>
                                     <div>
-                                      <label className="text-sm font-medium">Estado</label>
-                                      <p className="text-sm text-muted-foreground">{selectedAlert.status}</p>
+                                      <label className="text-sm font-medium">Mensaje</label>
+                                      <p className="text-sm text-muted-foreground">{selectedAlert.message}</p>
                                     </div>
-                                  </div>
-                                  <div>
-                                    <label className="text-sm font-medium">Mensaje</label>
-                                    <p className="text-sm text-muted-foreground">{selectedAlert.message}</p>
-                                  </div>
-                                  <div className="grid grid-cols-2 gap-4">
-                                    <div>
-                                      <label className="text-sm font-medium">Red</label>
-                                      <p className="text-sm text-muted-foreground">{selectedAlert.networkName}</p>
+                                    <div className="grid grid-cols-2 gap-4">
+                                      <div>
+                                        <label className="text-sm font-medium">Red</label>
+                                        <p className="text-sm text-muted-foreground">{selectedAlert.networkName}</p>
+                                      </div>
+                                      <div>
+                                        <label className="text-sm font-medium">Dispositivo</label>
+                                        <p className="text-sm text-muted-foreground font-mono">
+                                          {selectedAlert.deviceSerial}
+                                        </p>
+                                      </div>
                                     </div>
                                     <div>
-                                      <label className="text-sm font-medium">Dispositivo</label>
-                                      <p className="text-sm text-muted-foreground font-mono">
-                                        {selectedAlert.deviceSerial}
+                                      <label className="text-sm font-medium">Fecha y Hora</label>
+                                      <p className="text-sm text-muted-foreground">
+                                        {new Date(selectedAlert.timestamp).toLocaleString()}
                                       </p>
                                     </div>
                                   </div>
-                                  <div>
-                                    <label className="text-sm font-medium">Fecha y Hora</label>
-                                    <p className="text-sm text-muted-foreground">
-                                      {new Date(selectedAlert.timestamp).toLocaleString()}
-                                    </p>
-                                  </div>
-                                </div>
-                              )}
-                            </DialogContent>
-                          </Dialog>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
+                                )}
+                              </DialogContent>
+                            </Dialog>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              </>
             )}
           </CardContent>
         </Card>
