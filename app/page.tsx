@@ -18,6 +18,7 @@ import {
 import { AlertTriangle, CheckCircle, Info, RefreshCw, Download, Trash2, Wifi, Shield, Activity } from "lucide-react"
 import { toast } from "@/hooks/use-toast"
 import { ThemeToggle } from "@/components/theme-toggle"
+import { validateApiKey, getNetworks, getAlerts } from "@/lib/meraki-api"
 
 interface Alert {
   id: string
@@ -70,72 +71,56 @@ export default function MerakiDashboard() {
 
     setIsLoading(true)
     try {
-      // Simulate API connection with the provided API key
-      await new Promise((resolve) => setTimeout(resolve, 2000))
+      // Validar API Key y obtener organizaciones
+      const validation = await validateApiKey(apiKey)
 
-      // Basic API key validation (Meraki API keys are typically 40 characters)
-      if (apiKey.length < 20) {
-        throw new Error("API Key parece ser inválida. Debe tener al menos 20 caracteres.")
+      if (!validation.success) {
+        throw new Error(validation.error)
       }
 
-      // Simulate fetching organizations after successful connection
-      const sampleOrgs: Organization[] = [
-        { id: "org_1", name: "Oficina Principal" },
-        { id: "org_2", name: "Sucursal Norte" },
-        { id: "org_3", name: "Planta Baja" },
-      ]
+      const organizations = validation.organizations
+      setOrganizations(organizations.map((org) => ({ id: org.id, name: org.name })))
 
-      const sampleNetworks: Network[] = [
-        { id: "N_123456789", name: "Red Principal", organizationId: "org_1" },
-        { id: "N_987654321", name: "Red Sucursal", organizationId: "org_2" },
-        { id: "N_456789123", name: "Red Planta Baja", organizationId: "org_3" },
-      ]
+      // Obtener redes de todas las organizaciones
+      const allNetworks: Network[] = []
+      for (const org of organizations) {
+        const networksResult = await getNetworks(apiKey, org.id)
+        if (networksResult.success) {
+          const orgNetworks = networksResult.data.map((net) => ({
+            id: net.id,
+            name: net.name,
+            organizationId: net.organizationId,
+          }))
+          allNetworks.push(...orgNetworks)
+        }
+      }
+      setNetworks(allNetworks)
 
-      const sampleAlerts: Alert[] = [
-        {
-          id: "alert_001",
-          type: "gateway_down",
-          severity: "critical",
-          message: "Gateway MX84 en oficina principal desconectado",
-          timestamp: new Date().toISOString(),
-          networkId: "N_123456789",
-          networkName: "Oficina Principal",
-          deviceSerial: "Q2XX-XXXX-XXXX",
-          status: "active",
-        },
-        {
-          id: "alert_002",
-          type: "high_cpu_usage",
-          severity: "warning",
-          message: "Uso alto de CPU en switch MS220-8P",
-          timestamp: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
-          networkId: "N_987654321",
-          networkName: "Sucursal Norte",
-          deviceSerial: "Q2YY-YYYY-YYYY",
-          status: "acknowledged",
-        },
-        {
-          id: "alert_003",
-          type: "client_connection_failed",
-          severity: "info",
-          message: "Múltiples fallos de conexión de clientes en AP MR36",
-          timestamp: new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString(),
-          networkId: "N_456789123",
-          networkName: "Planta Baja",
-          deviceSerial: "Q2ZZ-ZZZZ-ZZZZ",
-          status: "resolved",
-        },
-      ]
-
-      // Set all the data after successful connection
-      setOrganizations(sampleOrgs)
-      setNetworks(sampleNetworks)
-      setAlerts(sampleAlerts)
+      // Obtener alertas de todas las organizaciones
+      const allAlerts: Alert[] = []
+      for (const org of organizations) {
+        const alertsResult = await getAlerts(apiKey, org.id)
+        if (alertsResult.success) {
+          const orgAlerts = alertsResult.data.map((alert) => ({
+            id: alert.id,
+            type: alert.type,
+            severity: alert.severity,
+            message: alert.message,
+            timestamp: alert.timestamp,
+            networkId: alert.networkId,
+            networkName: alert.networkName,
+            deviceSerial: alert.deviceSerial || "N/A",
+            status: alert.status,
+          }))
+          allAlerts.push(...orgAlerts)
+        }
+      }
+      setAlerts(allAlerts)
       setIsConnected(true)
 
       toast({
         title: "Conexión exitosa",
-        description: `Conectado a Meraki Dashboard. Cargadas ${sampleOrgs.length} organizaciones y ${sampleAlerts.length} alertas.`,
+        description: `Conectado a Meraki API. Cargadas ${organizations.length} organizaciones, ${allNetworks.length} redes y ${allAlerts.length} alertas.`,
       })
     } catch (error) {
       toast({
@@ -172,33 +157,40 @@ export default function MerakiDashboard() {
   }
 
   const refreshAlerts = async () => {
+    if (!isConnected || !apiKey) return
+
     setIsLoading(true)
     try {
-      // Simulate API call
-      await new Promise((resolve) => setTimeout(resolve, 1500))
+      const allAlerts: Alert[] = []
 
-      // Generate new sample alerts
-      const newAlert: Alert = {
-        id: `alert_${Date.now()}`,
-        type: "bandwidth_exceeded",
-        severity: "warning",
-        message: "Ancho de banda excedido en red corporativa",
-        timestamp: new Date().toISOString(),
-        networkId: "N_123456789",
-        networkName: "Red Corporativa",
-        deviceSerial: "Q2AA-BBBB-CCCC",
-        status: "active",
+      // Obtener alertas actualizadas de todas las organizaciones
+      for (const org of organizations) {
+        const alertsResult = await getAlerts(apiKey, org.id)
+        if (alertsResult.success) {
+          const orgAlerts = alertsResult.data.map((alert) => ({
+            id: alert.id,
+            type: alert.type,
+            severity: alert.severity,
+            message: alert.message,
+            timestamp: alert.timestamp,
+            networkId: alert.networkId,
+            networkName: alert.networkName,
+            deviceSerial: alert.deviceSerial || "N/A",
+            status: alert.status,
+          }))
+          allAlerts.push(...orgAlerts)
+        }
       }
 
-      setAlerts((prev) => [newAlert, ...prev])
+      setAlerts(allAlerts)
       toast({
         title: "Alertas actualizadas",
-        description: "Se han cargado las últimas alertas",
+        description: `Se han cargado ${allAlerts.length} alertas desde Meraki API`,
       })
     } catch (error) {
       toast({
         title: "Error",
-        description: "No se pudieron actualizar las alertas",
+        description: "No se pudieron actualizar las alertas desde Meraki API",
         variant: "destructive",
       })
     } finally {
@@ -285,11 +277,22 @@ export default function MerakiDashboard() {
     })
   }
 
-  const handleApiKeySubmit = () => {
-    if (tempApiKey.length < 20) {
+  const handleApiKeySubmit = async () => {
+    if (tempApiKey.length < 40) {
       toast({
         title: "Error",
-        description: "API Key debe tener al menos 20 caracteres",
+        description: "API Key de Meraki debe tener exactamente 40 caracteres",
+        variant: "destructive",
+      })
+      return
+    }
+
+    // Validar formato de API Key de Meraki (40 caracteres hexadecimales)
+    const merakiKeyPattern = /^[a-fA-F0-9]{40}$/
+    if (!merakiKeyPattern.test(tempApiKey)) {
+      toast({
+        title: "Error",
+        description: "Formato de API Key inválido. Debe ser 40 caracteres hexadecimales",
         variant: "destructive",
       })
       return
@@ -301,7 +304,7 @@ export default function MerakiDashboard() {
 
     toast({
       title: "API Key actualizada",
-      description: "Tu API Key ha sido actualizada correctamente",
+      description: "Tu API Key de Meraki ha sido actualizada correctamente",
     })
   }
 
