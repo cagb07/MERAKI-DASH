@@ -73,8 +73,17 @@ export default function MerakiDashboard() {
     }
 
     setIsLoading(true)
+    console.log("🚀 Iniciando conexión a Meraki...")
+
     try {
+      // Limpiar estado anterior
+      setAlerts([])
+      setOrganizations([])
+      setNetworks([])
+      setUseTestData(false)
+
       // Validar API Key y obtener organizaciones
+      console.log("🔑 Validando API Key...")
       const validation = await validateApiKey(apiKey)
 
       if (!validation.success) {
@@ -82,9 +91,11 @@ export default function MerakiDashboard() {
       }
 
       const organizations = validation.organizations
+      console.log(`🏢 Organizaciones encontradas: ${organizations.length}`)
       setOrganizations(organizations.map((org) => ({ id: org.id, name: org.name })))
 
       // Obtener redes de todas las organizaciones
+      console.log("🌐 Obteniendo redes...")
       const allNetworks: Network[] = []
       for (const org of organizations) {
         const networksResult = await getNetworks(apiKey, org.id)
@@ -95,18 +106,24 @@ export default function MerakiDashboard() {
             organizationId: net.organizationId,
           }))
           allNetworks.push(...orgNetworks)
+          console.log(`📡 Redes en ${org.name}: ${orgNetworks.length}`)
         }
       }
+      console.log(`📡 Total redes: ${allNetworks.length}`)
       setNetworks(allNetworks)
 
       // Obtener alertas de todas las organizaciones
+      console.log("🚨 Obteniendo alertas...")
       const allAlerts: Alert[] = []
       let hasRealAlerts = false
 
       for (const org of organizations) {
+        console.log(`🔍 Procesando alertas de: ${org.name}`)
         const alertsResult = loadFullHistory
           ? await getAllHistoryAlerts(apiKey, org.id)
           : await getAlerts(apiKey, org.id, selectedTimespan)
+
+        console.log(`📊 Resultado para ${org.name}:`, alertsResult)
 
         if (alertsResult.success && alertsResult.data.length > 0) {
           hasRealAlerts = true
@@ -122,12 +139,16 @@ export default function MerakiDashboard() {
             status: alert.status,
           }))
           allAlerts.push(...orgAlerts)
+          console.log(`✅ Alertas agregadas de ${org.name}: ${orgAlerts.length}`)
+          console.log(`📈 Total acumulado: ${allAlerts.length}`)
+        } else {
+          console.log(`❌ Sin alertas en ${org.name}`)
         }
       }
 
       // Si no hay alertas reales, generar alertas de prueba
       if (!hasRealAlerts) {
-        console.log("No se encontraron alertas reales, generando alertas de prueba...")
+        console.log("🧪 Generando alertas de prueba...")
         const networkIds = allNetworks.map((n) => n.id)
         const testAlerts = await generateTestAlerts(organizations[0]?.id || "test_org", networkIds)
         allAlerts.push(
@@ -144,18 +165,32 @@ export default function MerakiDashboard() {
           })),
         )
         setUseTestData(true)
+        console.log(`🧪 Alertas de prueba generadas: ${testAlerts.length}`)
       } else {
         setUseTestData(false)
+        console.log(`✅ Usando alertas reales: ${allAlerts.length}`)
       }
 
+      console.log(`🎯 Actualizando estado con ${allAlerts.length} alertas`)
+      console.log("📋 Alertas finales:", allAlerts)
+
+      // Actualizar estado
       setAlerts(allAlerts)
       setIsConnected(true)
+
+      // Verificar que el estado se actualizó
+      setTimeout(() => {
+        console.log("🔍 Verificación post-actualización:")
+        console.log("- alerts.length:", allAlerts.length)
+        console.log("- isConnected: true")
+      }, 100)
 
       toast({
         title: "Conexión exitosa",
         description: `Conectado a Meraki API. Cargadas ${organizations.length} organizaciones, ${allNetworks.length} redes y ${allAlerts.length} alertas${useTestData ? " (datos de prueba)" : ""}${loadFullHistory ? " (historial completo)" : ""}.`,
       })
     } catch (error) {
+      console.error("❌ Error en conexión:", error)
       toast({
         title: "Error de conexión",
         description: error instanceof Error ? error.message : "No se pudo conectar a Meraki API",
@@ -163,6 +198,7 @@ export default function MerakiDashboard() {
       })
     } finally {
       setIsLoading(false)
+      console.log("🏁 Proceso de conexión finalizado")
     }
   }
 
@@ -472,6 +508,11 @@ export default function MerakiDashboard() {
     total: alerts.length,
   }
 
+  useEffect(() => {
+    console.log(`🔄 Estado de alerts cambió: ${alerts.length} alertas`)
+    console.log("Alertas actuales:", alerts)
+  }, [alerts])
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 dark:from-slate-900 dark:to-slate-800 p-4">
       <div className="max-w-7xl mx-auto space-y-6">
@@ -576,6 +617,25 @@ export default function MerakiDashboard() {
                 <Trash2 className="h-4 w-4 mr-2" />
                 Limpiar
               </Button>
+
+              {process.env.NODE_ENV === "development" && (
+                <Button
+                  onClick={() => {
+                    console.log("🐛 DEBUG INFO:")
+                    console.log("- isConnected:", isConnected)
+                    console.log("- alerts.length:", alerts.length)
+                    console.log("- organizations.length:", organizations.length)
+                    console.log("- networks.length:", networks.length)
+                    console.log("- useTestData:", useTestData)
+                    console.log("- alerts:", alerts)
+                  }}
+                  variant="outline"
+                  size="sm"
+                  className="bg-purple-100 hover:bg-purple-200"
+                >
+                  🐛 Debug
+                </Button>
+              )}
 
               <div className="ml-auto flex items-center gap-2">
                 <Badge variant={isConnected ? "default" : "secondary"}>
