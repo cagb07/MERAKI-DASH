@@ -54,9 +54,13 @@ export default function MerakiDashboard() {
   const [selectedSeverity, setSelectedSeverity] = useState<string>("all")
   const [searchTerm, setSearchTerm] = useState("")
   const [selectedAlert, setSelectedAlert] = useState<Alert | null>(null)
-  const [selectedTimespan, setSelectedTimespan] = useState<number>(2592000) // 30 días por defecto (cambio de 7776000)
+  const [selectedTimespan, setSelectedTimespan] = useState<number>(86400) // 24 horas por defecto
   const [loadFullHistory, setLoadFullHistory] = useState(false)
   const [useTestData, setUseTestData] = useState(false)
+
+  const [isLoadingMore, setIsLoadingMore] = useState(false)
+  const [loadedTimespan, setLoadedTimespan] = useState<number>(86400) // Tiempo ya cargado
+  const [showLoadMoreWarning, setShowLoadMoreWarning] = useState(false)
 
   const [apiKey, setApiKey] = useState<string>("")
   const [showApiKeyDialog, setShowApiKeyDialog] = useState(false)
@@ -84,6 +88,7 @@ export default function MerakiDashboard() {
       setOrganizations([])
       setNetworks([])
       setUseTestData(false)
+      setLoadedTimespan(86400) // Reset a 24 horas
 
       // Validar API Key y obtener organizaciones
       console.log("🔑 Validando API Key...")
@@ -115,16 +120,14 @@ export default function MerakiDashboard() {
       console.log(`📡 Total redes: ${allNetworks.length}`)
       setNetworks(allNetworks)
 
-      // Obtener alertas de todas las organizaciones
-      console.log("🚨 Obteniendo alertas...")
+      // Obtener alertas de las últimas 24 horas inicialmente
+      console.log("🚨 Obteniendo alertas de las últimas 24 horas...")
       const allAlerts: Alert[] = []
       let hasRealAlerts = false
 
       for (const org of organizations) {
         console.log(`🔍 Procesando alertas de: ${org.name}`)
-        const alertsResult = loadFullHistory
-          ? await getAllHistoryAlerts(apiKey, org.id)
-          : await getAlerts(apiKey, org.id, selectedTimespan)
+        const alertsResult = await getAlerts(apiKey, org.id, 86400) // Solo 24 horas inicialmente
 
         console.log(`📊 Resultado para ${org.name}:`, alertsResult)
 
@@ -190,7 +193,7 @@ export default function MerakiDashboard() {
 
       toast({
         title: "Conexión exitosa",
-        description: `Conectado a Meraki API. Cargadas ${organizations.length} organizaciones, ${allNetworks.length} redes y ${allAlerts.length} alertas${useTestData ? " (datos de prueba)" : ""}${loadFullHistory ? " (historial completo)" : ""}.`,
+        description: `Conectado a Meraki API. Cargadas ${organizations.length} organizaciones, ${allNetworks.length} redes y ${allAlerts.length} alertas de las últimas 24 horas${useTestData ? " (datos de prueba)" : ""}.`,
       })
     } catch (error) {
       console.error("❌ Error en conexión:", error)
@@ -203,6 +206,120 @@ export default function MerakiDashboard() {
       setIsLoading(false)
       console.log("🏁 Proceso de conexión finalizado")
     }
+  }
+
+  const loadMoreAlerts = async () => {
+    if (!isConnected || !apiKey || isLoadingMore) return
+
+    // Mostrar advertencia antes de cargar más datos
+    const nextTimespan = getNextTimespan(loadedTimespan)
+    const timespanText = getTimespanText(nextTimespan)
+    const estimatedTime = getEstimatedLoadTime(nextTimespan)
+
+    const confirmed = window.confirm(
+      `¿Deseas cargar alertas de ${timespanText}?\n\n` +
+        `⚠️ ADVERTENCIA: Esto puede tomar ${estimatedTime} debido a la mayor cantidad de datos.\n\n` +
+        `Tiempo de carga estimado: ${estimatedTime}\n` +
+        `Datos adicionales: ~${Math.round((nextTimespan - loadedTimespan) / 86400)} días más`,
+    )
+
+    if (!confirmed) return
+
+    setIsLoadingMore(true)
+    try {
+      console.log(`🔄 Cargando más alertas hasta ${timespanText}...`)
+
+      const allAlerts: Alert[] = []
+      let hasRealAlerts = false
+
+      for (const org of organizations) {
+        console.log(`🔍 Cargando más alertas de: ${org.name}`)
+        const alertsResult = await getAlerts(apiKey, org.id, nextTimespan)
+
+        if (alertsResult.success && alertsResult.data.length > 0) {
+          hasRealAlerts = true
+          const orgAlerts = alertsResult.data.map((alert) => ({
+            id: alert.id,
+            type: alert.type,
+            severity: alert.severity,
+            message: alert.message,
+            timestamp: alert.timestamp,
+            networkId: alert.networkId,
+            networkName: alert.networkName,
+            deviceSerial: alert.deviceSerial || "N/A",
+            status: alert.status,
+          }))
+          allAlerts.push(...orgAlerts)
+        }
+      }
+
+      // Si no hay alertas reales y estamos usando datos de prueba, generar más
+      if (!hasRealAlerts && useTestData) {
+        const networkIds = networks.map((n) => n.id)
+        const testAlerts = await generateTestAlerts(organizations[0]?.id || "test_org", networkIds)
+        allAlerts.push(
+          ...testAlerts.map((alert) => ({
+            id: alert.id,
+            type: alert.type,
+            severity: alert.severity,
+            message: alert.message,
+            timestamp: alert.timestamp,
+            networkId: alert.networkId,
+            networkName: alert.networkName,
+            deviceSerial: alert.deviceSerial,
+            status: alert.status,
+          })),
+        )
+      }
+
+      // Eliminar duplicados basados en ID
+      const uniqueAlerts = allAlerts.filter((alert, index, self) => index === self.findIndex((a) => a.id === alert.id))
+
+      setAlerts(uniqueAlerts)
+      setLoadedTimespan(nextTimespan)
+
+      toast({
+        title: "Más alertas cargadas",
+        description: `Se han cargado ${uniqueAlerts.length} alertas de ${timespanText}${useTestData ? " (datos de prueba)" : ""}`,
+      })
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: "No se pudieron cargar más alertas desde Meraki API",
+        variant: "destructive",
+      })
+    } finally {
+      setIsLoadingMore(false)
+    }
+  }
+
+  const getNextTimespan = (currentTimespan: number): number => {
+    if (currentTimespan === 86400) return 259200 // 24h -> 3 días
+    if (currentTimespan === 259200) return 604800 // 3 días -> 1 semana
+    if (currentTimespan === 604800) return 2592000 // 1 semana -> 1 mes
+    if (currentTimespan === 2592000) return 7776000 // 1 mes -> 3 meses
+    return 7776000 // Máximo 3 meses
+  }
+
+  const getTimespanText = (timespan: number): string => {
+    if (timespan === 86400) return "últimas 24 horas"
+    if (timespan === 259200) return "últimos 3 días"
+    if (timespan === 604800) return "última semana"
+    if (timespan === 2592000) return "último mes"
+    if (timespan === 7776000) return "últimos 3 meses"
+    return "período extendido"
+  }
+
+  const getEstimatedLoadTime = (timespan: number): string => {
+    if (timespan === 259200) return "10-15 segundos"
+    if (timespan === 604800) return "20-30 segundos"
+    if (timespan === 2592000) return "45-60 segundos"
+    if (timespan === 7776000) return "1-2 minutos"
+    return "varios minutos"
+  }
+
+  const canLoadMore = (): boolean => {
+    return loadedTimespan < 7776000 && !useTestData
   }
 
   const disconnectFromMeraki = () => {
@@ -622,6 +739,27 @@ export default function MerakiDashboard() {
                 </Button>
               )}
 
+              {isConnected && canLoadMore() && (
+                <Button
+                  onClick={loadMoreAlerts}
+                  disabled={isLoadingMore}
+                  variant="outline"
+                  className="bg-orange-50 hover:bg-orange-100 border-orange-200"
+                >
+                  {isLoadingMore ? (
+                    <>
+                      <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                      Cargando...
+                    </>
+                  ) : (
+                    <>
+                      <Download className="h-4 w-4 mr-2" />
+                      Cargar Más ({getTimespanText(getNextTimespan(loadedTimespan))})
+                    </>
+                  )}
+                </Button>
+              )}
+
               <Button onClick={exportAlerts} disabled={alerts.length === 0} variant="outline">
                 <Download className="h-4 w-4 mr-2" />
                 Exportar a Excel
@@ -681,7 +819,7 @@ export default function MerakiDashboard() {
                     stroke="currentColor"
                     strokeWidth="3"
                     fill="none"
-                    d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                    d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 0 0 1 0 -31.831"
                   />
                   <path
                     className="text-red-500"
@@ -689,7 +827,7 @@ export default function MerakiDashboard() {
                     strokeWidth="3"
                     fill="none"
                     strokeDasharray={`${alertStats.total > 0 ? (alertStats.critical / alertStats.total) * 100 : 0}, 100`}
-                    d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                    d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 0 0 1 0 -31.831"
                   />
                 </svg>
                 <div className="absolute inset-0 flex items-center justify-center">
@@ -716,7 +854,7 @@ export default function MerakiDashboard() {
                     stroke="currentColor"
                     strokeWidth="3"
                     fill="none"
-                    d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                    d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 0 0 1 0 -31.831"
                   />
                   <path
                     className="text-yellow-500"
@@ -724,7 +862,7 @@ export default function MerakiDashboard() {
                     strokeWidth="3"
                     fill="none"
                     strokeDasharray={`${alertStats.total > 0 ? (alertStats.warning / alertStats.total) * 100 : 0}, 100`}
-                    d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                    d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 0 0 1 0 -31.831"
                   />
                 </svg>
                 <div className="absolute inset-0 flex items-center justify-center">
@@ -751,7 +889,7 @@ export default function MerakiDashboard() {
                     stroke="currentColor"
                     strokeWidth="3"
                     fill="none"
-                    d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                    d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 0 0 1 0 -31.831"
                   />
                   <path
                     className="text-blue-500"
@@ -759,7 +897,7 @@ export default function MerakiDashboard() {
                     strokeWidth="3"
                     fill="none"
                     strokeDasharray={`${alertStats.total > 0 ? (alertStats.info / alertStats.total) * 100 : 0}, 100`}
-                    d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                    d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 0 0 1 0 -31.831"
                   />
                 </svg>
                 <div className="absolute inset-0 flex items-center justify-center">
@@ -786,7 +924,7 @@ export default function MerakiDashboard() {
                     stroke="currentColor"
                     strokeWidth="3"
                     fill="none"
-                    d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                    d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 0 0 1 0 -31.831"
                   />
                   {alertStats.total > 0 && (
                     <>
@@ -796,7 +934,7 @@ export default function MerakiDashboard() {
                         strokeWidth="3"
                         fill="none"
                         strokeDasharray={`${(alertStats.critical / alertStats.total) * 100}, 100`}
-                        d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                        d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 0 0 1 0 -31.831"
                       />
                       <path
                         className="text-yellow-500"
@@ -805,7 +943,7 @@ export default function MerakiDashboard() {
                         fill="none"
                         strokeDasharray={`${(alertStats.warning / alertStats.total) * 100}, 100`}
                         strokeDashoffset={`-${(alertStats.critical / alertStats.total) * 100}`}
-                        d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                        d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 0 0 1 0 -31.831"
                       />
                       <path
                         className="text-blue-500"
@@ -814,7 +952,7 @@ export default function MerakiDashboard() {
                         fill="none"
                         strokeDasharray={`${(alertStats.info / alertStats.total) * 100}, 100`}
                         strokeDashoffset={`-${((alertStats.critical + alertStats.warning) / alertStats.total) * 100}`}
-                        d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                        d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 0 0 1 0 -31.831"
                       />
                     </>
                   )}
@@ -915,7 +1053,7 @@ export default function MerakiDashboard() {
             <CardTitle>Alertas Activas</CardTitle>
             <CardDescription>
               Mostrando {paginatedAlerts.length} de {filteredAlerts.length} alertas (Página {currentPage} de{" "}
-              {totalPages})
+              {totalPages}) - Período cargado: {getTimespanText(loadedTimespan)}
             </CardDescription>
           </CardHeader>
           <CardContent>
