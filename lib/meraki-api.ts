@@ -117,7 +117,7 @@ export async function getNetworks(apiKey: string, organizationId: string) {
   }
 }
 
-export async function getAlerts(apiKey: string, organizationId: string, timespan = 86400) {
+export async function getAlerts(apiKey: string, organizationId: string, timespan = 604800) {
   try {
     // Obtener alertas de la organización
     const response = await fetch(
@@ -162,7 +162,7 @@ export async function getAlerts(apiKey: string, organizationId: string, timespan
   }
 }
 
-export async function getNetworkAlerts(apiKey: string, networkId: string, timespan = 86400) {
+export async function getNetworkAlerts(apiKey: string, networkId: string, timespan = 604800) {
   try {
     const response = await fetch(`${MERAKI_API_BASE}/networks/${networkId}/alerts/history?timespan=${timespan}`, {
       headers: {
