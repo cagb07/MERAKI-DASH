@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useMemo } from "react" // Added useMemo
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -73,6 +73,9 @@ export default function MerakiDashboard() {
   const [currentPage, setCurrentPage] = useState(1)
   const [itemsPerPage, setItemsPerPage] = useState(10)
 
+  const [loadingMessage, setLoadingMessage] = useState<string | null>(null)
+  const [showFallbackNetworkMessage, setShowFallbackNetworkMessage] = useState(false)
+
   const connectToMeraki = async () => {
     if (!apiKey) {
       setShowApiKeyDialog(true)
@@ -80,6 +83,8 @@ export default function MerakiDashboard() {
     }
 
     setIsLoading(true)
+    setShowFallbackNetworkMessage(false) // Reset fallback message on new connection attempt
+    setLoadingMessage("Iniciando conexión...")
     console.log("🚀 Iniciando conexión a Meraki...")
 
     try {
@@ -91,241 +96,292 @@ export default function MerakiDashboard() {
       setLoadedTimespan(86400) // Reset a 24 horas
 
       // Validar API Key y obtener organizaciones
+      setLoadingMessage("Validando API Key...")
       console.log("🔑 Validando API Key...")
       const validation = await validateApiKey(apiKey)
 
-      if (!validation.success) {
-        throw new Error(validation.error)
+      if (!validation.success || !validation.organizations) {
+        const errorMsg = validation.error || "Fallo al validar API key o no se encontraron organizaciones."
+        toast({ title: "Error de Validación", description: errorMsg, variant: "destructive" })
+        setIsLoading(false)
+        setLoadingMessage(null)
+        return;
       }
 
-      const organizations = validation.organizations
-      console.log(`🏢 Organizaciones encontradas: ${organizations.length}`)
-      setOrganizations(organizations.map((org) => ({ id: org.id, name: org.name })))
+      setLoadingMessage("Obteniendo organizaciones...")
+      const orgs = validation.organizations.map((org) => ({ id: org.id, name: org.name }))
+      console.log(`🏢 Organizaciones encontradas: ${orgs.length}`)
+      setOrganizations(orgs)
+      setIsConnected(true) // Set connected early
 
-      // Obtener redes de todas las organizaciones
-      console.log("🌐 Obteniendo redes...")
-      const allNetworks: Network[] = []
-      for (const org of organizations) {
-        try {
-          const networksResult = await getNetworks(apiKey, org.id)
-          if (networksResult.success) {
-            const orgNetworks = networksResult.data.map((net) => ({
-              id: net.id,
-              name: net.name,
-              organizationId: net.organizationId,
-            }))
-            allNetworks.push(...orgNetworks)
-            console.log(`📡 Redes en ${org.name}: ${orgNetworks.length}`)
-          }
-        } catch (error) {
-          console.error(`❌ Error obteniendo redes de ${org.name}:`, error)
-        }
-      }
-      console.log(`📡 Total redes: ${allNetworks.length}`)
-      setNetworks(allNetworks)
-
-      // Generar alertas de prueba inmediatamente para mostrar algo
-      console.log("🧪 Generando alertas de prueba para mostrar datos inmediatamente...")
-      const testAlerts = await generateTestAlerts(
-        organizations[0]?.id || "demo_org",
-        allNetworks.map((n) => n.id),
-      )
-      const initialAlerts = testAlerts.map((alert) => ({
-        id: alert.id,
-        type: alert.type,
-        severity: alert.severity,
-        message: alert.message,
-        timestamp: alert.timestamp,
-        networkId: alert.networkId,
-        networkName: alert.networkName,
-        deviceSerial: alert.deviceSerial,
-        status: alert.status,
-      }))
-
-      // Actualizar estado inmediatamente con datos de prueba
-      setAlerts(initialAlerts)
-      setUseTestData(true)
-      setIsConnected(true)
-
-      // IMPORTANTE: Resetear loading aquí para mostrar los datos de prueba
-      setIsLoading(false)
-
-      console.log(`✅ Mostrando ${initialAlerts.length} alertas de prueba iniciales`)
-
-      toast({
-        title: "Conexión exitosa",
-        description: `Conectado a Meraki API. Mostrando ${initialAlerts.length} alertas de prueba mientras se cargan datos reales...`,
-      })
-
-      // Ahora intentar obtener alertas reales en segundo plano
-      console.log("🚨 Intentando obtener alertas reales en segundo plano...")
-      const realAlerts: Alert[] = []
-      let hasRealAlerts = false
-
-      for (const org of organizations) {
-        try {
-          console.log(`🔍 Procesando alertas de: ${org.name}`)
-          const alertsResult = await getAlerts(apiKey, org.id, 86400) // Solo 24 horas inicialmente
-
-          console.log(`📊 Resultado para ${org.name}:`, alertsResult)
-
-          if (alertsResult.success && alertsResult.data.length > 0) {
-            hasRealAlerts = true
-            const orgAlerts = alertsResult.data.map((alert) => ({
-              id: alert.id,
-              type: alert.type,
-              severity: alert.severity,
-              message: alert.message,
-              timestamp: alert.timestamp,
-              networkId: alert.networkId,
-              networkName: alert.networkName,
-              deviceSerial: alert.deviceSerial || "N/A",
-              status: alert.status,
-            }))
-            realAlerts.push(...orgAlerts)
-            console.log(`✅ Alertas reales agregadas de ${org.name}: ${orgAlerts.length}`)
-          } else {
-            console.log(`❌ Sin alertas reales en ${org.name}`)
-          }
-        } catch (orgError) {
-          console.error(`❌ Error obteniendo alertas de ${org.name}:`, orgError)
-        }
-      }
-
-      // Si encontramos alertas reales, reemplazar las de prueba
-      if (hasRealAlerts && realAlerts.length > 0) {
-        console.log(`🎯 Reemplazando con ${realAlerts.length} alertas reales`)
-        setAlerts(realAlerts)
-        setUseTestData(false)
-
-        toast({
-          title: "Alertas reales cargadas",
-          description: `Se encontraron ${realAlerts.length} alertas reales de las últimas 24 horas`,
-        })
+      if (orgs.length > 0) {
+        const defaultOrgId = orgs[0].id
+        const defaultOrgName = orgs[0].name;
+        setSelectedOrg(defaultOrgId)
+        console.log(`🚀 Organización por defecto seleccionada: ${defaultOrgName} (${defaultOrgId})`)
+        await loadDataForOrganization(defaultOrgId, defaultOrgName)
       } else {
-        console.log(`🧪 Manteniendo ${initialAlerts.length} alertas de prueba`)
+        toast({
+          title: "Sin organizaciones",
+          description: "No se encontraron organizaciones para esta API Key.",
+          variant: "destructive",
+        })
+        setIsLoading(false)
+        setLoadingMessage(null)
       }
     } catch (error) {
       console.error("❌ Error en conexión:", error)
-
+      setLoadingMessage(null)
+      const errorMsg = error instanceof Error ? error.message : "Error desconocido durante la conexión."
+      toast({ title: "Error de Conexión", description: errorMsg, variant: "destructive" })
       // En caso de error, al menos mostrar datos de prueba
-      console.log("🧪 Generando alertas de prueba debido a error...")
+      console.log("🧪 Generando alertas de prueba debido a error de conexión...")
       const fallbackAlerts = await generateTestAlerts("error_org", ["error_network"])
       const errorAlerts = fallbackAlerts.map((alert) => ({
         id: alert.id,
         type: alert.type,
         severity: alert.severity,
-        message: `[ERROR] ${alert.message}`,
+        message: `[CON_ERROR] ${alert.message}`,
         timestamp: alert.timestamp,
         networkId: alert.networkId,
         networkName: alert.networkName,
         deviceSerial: alert.deviceSerial,
         status: alert.status,
       }))
-
       setAlerts(errorAlerts)
       setUseTestData(true)
-      setIsConnected(true)
-
-      // IMPORTANTE: También resetear loading en caso de error
-      setIsLoading(false)
-
-      toast({
-        title: "Error de conexión",
-        description: `${error instanceof Error ? error.message : "Error desconocido"}. Mostrando datos de prueba.`,
-        variant: "destructive",
-      })
+      setIsLoading(false) // Already set loadingMessage to null
     }
-
+    // setLoadingMessage(null) // Ensure loading message is cleared on successful completion too, if not done by loadDataForOrg
     console.log("🏁 Proceso de conexión finalizado")
   }
 
-  const loadMoreAlerts = async () => {
-    if (!isConnected || !apiKey || isLoadingMore) return
+  // Nueva función para cargar datos de una organización específica
+  const loadDataForOrganization = async (orgId: string, orgName?: string) => {
+    if (!apiKey) {
+      toast({ title: "API Key no configurada", variant: "destructive" })
+      setLoadingMessage(null)
+      return
+    }
+    const currentOrgName = orgName || organizations.find(o => o.id === orgId)?.name || orgId;
+    console.log(`🔄 Cargando datos para la organización: ${currentOrgName}`)
+    setIsLoading(true)
+    setShowFallbackNetworkMessage(false) // Reset fallback message for new org load
+    setLoadingMessage(`Cargando datos para ${currentOrgName}...`)
 
-    // Mostrar advertencia antes de cargar más datos
-    const nextTimespan = getNextTimespan(loadedTimespan)
-    const timespanText = getTimespanText(nextTimespan)
-    const estimatedTime = getEstimatedLoadTime(nextTimespan)
+    setNetworks([])
+    setAlerts([])
+    setUseTestData(true)
 
-    const confirmed = window.confirm(
-      `¿Deseas cargar alertas de ${timespanText}?\n\n` +
-        `⚠️ ADVERTENCIA: Esto puede tomar ${estimatedTime} debido a la mayor cantidad de datos.\n\n` +
-        `Tiempo de carga estimado: ${estimatedTime}\n` +
-        `Datos adicionales: ~${Math.round((nextTimespan - loadedTimespan) / 86400)} días más`,
-    )
-
-    if (!confirmed) return
-
-    setIsLoadingMore(true)
     try {
-      console.log(`🔄 Cargando más alertas hasta ${timespanText}...`)
+      setLoadingMessage(`Obteniendo redes para ${currentOrgName}...`)
+      console.log(`🧪 Generando alertas de prueba iniciales para ${currentOrgName}...`)
+      const tempNetworkIds = [`org-placeholder-net-${orgId}`];
+      const initialTestAlerts = await generateTestAlerts(orgId, tempNetworkIds);
+      setAlerts(initialTestAlerts.map(alert => ({ ...alert, message: `[INITIAL_TEST] ${alert.message}` })));
 
-      const allAlerts: Alert[] = []
-      let hasRealAlerts = false
+      console.log(`🌐 Obteniendo redes para ${currentOrgName} (${orgId})...`)
+      const networksResult = await getNetworks(apiKey, orgId)
+      let orgNetworks: Network[] = []
+      if (networksResult.success && networksResult.data) {
+        orgNetworks = networksResult.data.map((net) => ({
+          id: net.id,
+          name: net.name,
+          organizationId: net.organizationId,
+        }))
+        setNetworks(orgNetworks)
+        console.log(`📡 Redes encontradas en ${currentOrgName}: ${orgNetworks.length}`)
 
-      for (const org of organizations) {
-        try {
-          console.log(`🔍 Cargando más alertas de: ${org.name}`)
-          const alertsResult = await getAlerts(apiKey, org.id, nextTimespan)
-
-          if (alertsResult.success && alertsResult.data.length > 0) {
-            hasRealAlerts = true
-            const orgAlerts = alertsResult.data.map((alert) => ({
-              id: alert.id,
-              type: alert.type,
-              severity: alert.severity,
-              message: alert.message,
-              timestamp: alert.timestamp,
-              networkId: alert.networkId,
-              networkName: alert.networkName,
-              deviceSerial: alert.deviceSerial || "N/A",
-              status: alert.status,
-            }))
-            allAlerts.push(...orgAlerts)
-          }
-        } catch (orgError) {
-          console.error(`❌ Error cargando más alertas de ${org.name}:`, orgError)
+        if (orgNetworks.length > 0) {
+            const networkSpecificTestAlerts = await generateTestAlerts(orgId, orgNetworks.map(n => n.id));
+            setAlerts(networkSpecificTestAlerts.map(alert => ({ ...alert, message: `[NET_TEST] ${alert.message}` })));
         }
+      } else {
+        console.error(`❌ Error obteniendo redes de ${currentOrgName}: ${networksResult.error}`)
+        toast({
+          title: `Error obteniendo redes para ${currentOrgName}`,
+          description: networksResult.error || "No se pudieron cargar las redes.",
+          variant: "destructive",
+        })
       }
 
-      // Si no hay alertas reales y estamos usando datos de prueba, generar más
-      if (!hasRealAlerts && useTestData) {
-        const networkIds = networks.map((n) => n.id)
-        const testAlerts = await generateTestAlerts(organizations[0]?.id || "test_org", networkIds)
-        allAlerts.push(
-          ...testAlerts.map((alert) => ({
+      setLoadingMessage(`Obteniendo alertas para ${currentOrgName}...`)
+      console.log(`🚨 Obteniendo alertas reales para ${currentOrgName} (${orgId}) (últimas 24 horas)...`)
+      const alertsResult = await getAlerts(apiKey, orgId, 86400)
+
+      if (alertsResult.success && alertsResult.data) { // Check data existence
+        if (alertsResult.data.length > 0) {
+          const realAlerts = alertsResult.data.map((alert) => ({
+          id: alert.id,
+          type: alert.type,
+          severity: alert.severity,
+          message: alert.message,
+          timestamp: alert.timestamp,
+          networkId: alert.networkId,
+          networkName: networks.find(n => n.id === alert.networkId)?.name || alert.networkName || "N/A", // Populate networkName
+          deviceSerial: alert.deviceSerial || "N/A",
             id: alert.id,
             type: alert.type,
             severity: alert.severity,
             message: alert.message,
             timestamp: alert.timestamp,
             networkId: alert.networkId,
-            networkName: alert.networkName,
-            deviceSerial: alert.deviceSerial,
+            networkName: networks.find(n => n.id === alert.networkId)?.name || alert.networkName || "N/A",
+            deviceSerial: alert.deviceSerial || "N/A",
             status: alert.status,
-          })),
-        )
+          }))
+          setAlerts(realAlerts)
+          setUseTestData(false)
+          console.log(`✅ ${realAlerts.length} alertas reales cargadas para ${currentOrgName}`)
+          toast({
+            title: "Datos cargados",
+            description: `Se cargaron ${realAlerts.length} alertas reales para ${currentOrgName}.`,
+          })
+        } else { // No real alerts found
+           console.log(`🧪 No se encontraron alertas reales para ${currentOrgName}. Mostrando datos de prueba.`)
+           setUseTestData(true)
+           const finalTestAlerts = await generateTestAlerts(orgId, orgNetworks.map(n => n.id));
+           setAlerts(finalTestAlerts.map(alert => ({ ...alert, message: `[NO_REAL_ALERTS_TEST] ${alert.message}` })));
+           toast({
+             title: "Sin alertas reales",
+             description: `No se encontraron alertas reales para ${currentOrgName} en las últimas 24 horas. Mostrando datos de prueba.`,
+           })
+        }
+        // Handle fallback message
+        if (alertsResult.usedNetworkFallback) {
+          setShowFallbackNetworkMessage(true);
+          toast({
+            title: "Modo de carga alternativo activado",
+            description: `Obteniendo alertas red por red para ${currentOrgName}. Esto podría tardar más.`,
+            variant: "default",
+          });
+        }
+      } else { // alertsResult.success is false
+        console.error(`❌ Error obteniendo alertas para ${currentOrgName}: ${alertsResult.error}`)
+        toast({ title: `Error obteniendo alertas para ${currentOrgName}`, description: alertsResult.error, variant: "destructive"})
+        // Keep test data
+        setUseTestData(true);
+        const errorFallbackAlerts = await generateTestAlerts(orgId, orgNetworks.map(n => n.id) || ["error_net_placeholder"]);
+        setAlerts(errorFallbackAlerts.map(alert => ({ ...alert, message: `[ALERT_LOAD_ERR_TEST] ${alert.message}` })));
+      }
+    } catch (error) {
+      console.error(`❌ Excepción cargando datos para ${currentOrgName} (${orgId}):`, error)
+      const errorMsg = error instanceof Error ? error.message : "Error desconocido."
+      toast({ title: "Error Crítico", description: `Error cargando datos para ${currentOrgName}: ${errorMsg}`, variant: "destructive"})
+      setUseTestData(true);
+      const criticalErrorAlerts = await generateTestAlerts(orgId, ["critical_error_placeholder"]);
+      setAlerts(criticalErrorAlerts.map(alert => ({ ...alert, message: `[CRITICAL_LOAD_ERR_TEST] ${alert.message}` })));
+    } finally {
+      setIsLoading(false)
+      setLoadingMessage(null)
+      console.log(`🏁 Proceso de carga para ${currentOrgName} (${orgId}) finalizado.`)
+    }
+  }
+
+  const loadMoreAlerts = async () => {
+    if (!isConnected || !apiKey || isLoadingMore || selectedOrg === "all" || !selectedOrg) return // Ensure an org is selected
+
+    // Mostrar advertencia antes de cargar más datos
+    const nextTimespan = getNextTimespan(loadedTimespan)
+    const t1ISO = new Date(Date.now() - loadedTimespan * 1000).toISOString()
+    const t0ISO = new Date(Date.now() - nextTimespan * 1000).toISOString()
+
+    const timespanText = `desde ${new Date(t0ISO).toLocaleDateString()} hasta ${new Date(t1ISO).toLocaleDateString()}`
+    const estimatedTime = getEstimatedLoadTime(nextTimespan - loadedTimespan) // Estimate for the additional window
+
+    const confirmed = window.confirm(
+      `¿Deseas cargar alertas ${timespanText}?\n\n` +
+        `⚠️ ADVERTENCIA: Esto puede tomar ${estimatedTime} (aprox.) para el nuevo período.\n\n` +
+        `Rango de carga: ${getTimespanText(nextTimespan - loadedTimespan)} adicionales`,
+    )
+
+    if (!confirmed) return
+
+    setIsLoadingMore(true)
+    // setLoadingMessage(`Cargando más alertas (${timespanText})...`); // Optional: if you want granular message for "load more" too
+
+    try {
+      console.log(`🔄 Cargando más alertas para ${selectedOrg} en el rango t0: ${t0ISO}, t1: ${t1ISO}...`)
+
+      let newFetchedAlerts: Alert[] = []
+      let hasRealAlerts = false
+      let fetchAttempted = false;
+
+      const orgToLoad = organizations.find(o => o.id === selectedOrg)
+      if (orgToLoad) {
+        fetchAttempted = true;
+        const alertsResult = await getAlerts(apiKey, orgToLoad.id, undefined, t0ISO, t1ISO)
+
+        if (alertsResult.success && alertsResult.data) { // Check data existence
+           if (alertsResult.data.length > 0) {
+            hasRealAlerts = true
+            const fetchedOrgAlerts = alertsResult.data.map((alert) => ({
+              id: alert.id,
+              type: alert.type,
+              severity: alert.severity,
+              message: alert.message,
+              timestamp: alert.timestamp,
+              networkId: alert.networkId,
+              networkName: networks.find(n => n.id === alert.networkId)?.name || alert.networkName || "N/A",
+              deviceSerial: alert.deviceSerial || "N/A",
+              status: alert.status,
+            }))
+            newFetchedAlerts.push(...fetchedOrgAlerts)
+            console.log(`✅ ${fetchedOrgAlerts.length} alertas adicionales reales cargadas para ${orgToLoad.name}`)
+          }
+          // Handle fallback message for loadMore as well
+          if (alertsResult.usedNetworkFallback && !showFallbackNetworkMessage) { // Show only if not already shown
+            setShowFallbackNetworkMessage(true); // Persist the message
+            toast({
+              title: "Modo de carga alternativo activado",
+              description: `Obteniendo alertas red por red para ${orgToLoad.name}. Esto podría tardar más.`,
+              variant: "default",
+            });
+          }
+        } else if (!alertsResult.success) { // alertsResult.success is false
+          console.error(`❌ Error obteniendo más alertas de ${orgToLoad.name}: ${alertsResult.error}`)
+          toast({
+            title: "Error al cargar más alertas",
+            description: alertsResult.error || "No se pudieron cargar más alertas.",
+            variant: "destructive",
+          })
+        }
       }
 
-      // Eliminar duplicados basados en ID
-      const uniqueAlerts = allAlerts.filter((alert, index, self) => index === self.findIndex((a) => a.id === alert.id))
+      if (fetchAttempted && !hasRealAlerts && useTestData && orgToLoad) {
+        console.log("🧪 Generando más alertas de prueba para el nuevo rango...")
+        const networkIds = networks.map((n) => n.id).length > 0 ? networks.map((n) => n.id) : [`more-test-net-${selectedOrg}`];
+        const testAlerts = await generateTestAlerts(selectedOrg, networkIds, nextTimespan - loadedTimespan);
+        const mappedTestAlerts = testAlerts.map((alert) => ({ ...alert, message: `[MORE_TEST_RANGE] ${alert.message}`}));
+        newFetchedAlerts.push(...mappedTestAlerts);
+        console.log(`🧪 ${mappedTestAlerts.length} alertas de prueba adicionales generadas.`)
+      }
 
-      setAlerts(uniqueAlerts)
-      setLoadedTimespan(nextTimespan)
-
-      toast({
-        title: "Más alertas cargadas",
-        description: `Se han cargado ${uniqueAlerts.length} alertas de ${timespanText}${useTestData ? " (datos de prueba)" : ""}`,
-      })
+      if (newFetchedAlerts.length > 0) {
+        const currentAlertCount = alerts.length;
+        setAlerts(prevAlerts => {
+          const existingAlertIds = new Set(prevAlerts.map(a => a.id));
+          const uniqueNewAlerts = newFetchedAlerts.filter(a => !existingAlertIds.has(a.id));
+          return [...prevAlerts, ...uniqueNewAlerts];
+        });
+        setLoadedTimespan(nextTimespan);
+        toast({
+          title: "Más alertas cargadas",
+          description: `Se han añadido ${newFetchedAlerts.length} alertas ${timespanText}${!hasRealAlerts && useTestData ? " (datos de prueba)" : ""}. Total: ${currentAlertCount + newFetchedAlerts.filter(a => !alerts.find(pa => pa.id === a.id)).length}`,
+        });
+      } else if (fetchAttempted) { // Only show "no more alerts" if a fetch was actually made
+        toast({
+          title: "No más alertas",
+          description: `No se encontraron alertas adicionales en el rango ${timespanText}.`,
+        });
+      }
     } catch (error) {
-      toast({
-        title: "Error",
-        description: "No se pudieron cargar más alertas desde Meraki API",
-        variant: "destructive",
-      })
+      console.error("❌ Error en loadMoreAlerts:", error);
+      const errorMsg = error instanceof Error ? error.message : "Error desconocido."
+      toast({ title: "Error", description: `No se pudieron cargar más alertas: ${errorMsg}`, variant: "destructive" })
     } finally {
       setIsLoadingMore(false)
+      // setLoadingMessage(null); // Clear "load more" specific message if used
     }
   }
 
@@ -370,6 +426,7 @@ export default function MerakiDashboard() {
     setSearchTerm("")
     setUseTestData(false)
     setLoadedTimespan(86400)
+    setShowFallbackNetworkMessage(false) // Reset on disconnect
     stopAutoRefresh()
     setLastAlertCount(0)
     toast({
@@ -388,60 +445,34 @@ export default function MerakiDashboard() {
 
     setIsLoading(true)
     try {
-      const allAlerts: Alert[] = []
-      let hasRealAlerts = false
-
-      // Obtener alertas actualizadas de todas las organizaciones
-      for (const org of organizations) {
-        try {
-          const alertsResult = await getAlerts(apiKey, org.id, loadedTimespan)
-
-          if (alertsResult.success && alertsResult.data.length > 0) {
-            hasRealAlerts = true
-            const orgAlerts = alertsResult.data.map((alert) => ({
-              id: alert.id,
-              type: alert.type,
-              severity: alert.severity,
-              message: alert.message,
-              timestamp: alert.timestamp,
-              networkId: alert.networkId,
-              networkName: alert.networkName,
-              deviceSerial: alert.deviceSerial || "N/A",
-              status: alert.status,
-            }))
-            allAlerts.push(...orgAlerts)
-          }
-        } catch (error) {
-          console.error(`Error refrescando alertas de ${org.name}:`, error)
+      // Refresh alerts only for the currently selected organization
+      if (selectedOrg && selectedOrg !== "all") {
+        await loadDataForOrganization(selectedOrg); // Re-load data for the current org
+        toast({
+            title: "Alertas actualizadas",
+            description: `Se han actualizado las alertas para la organización seleccionada.`,
+        });
+      } else {
+        // Handle case where "all" is selected or no org is selected - perhaps refresh the first org or do nothing
+        // For now, let's prompt to select an organization or refresh the first one if available
+        if (organizations.length > 0) {
+            await loadDataForOrganization(organizations[0].id);
+             toast({
+                title: "Alertas actualizadas",
+                description: `Se han actualizado las alertas para ${organizations[0].name} (primera organización).`,
+            });
+        } else {
+            toast({
+                title: "No se pueden actualizar alertas",
+                description: "Por favor, conecta y selecciona una organización primero.",
+                variant: "destructive",
+            });
         }
       }
-
-      // Si no hay alertas reales, mantener las de prueba o generar nuevas
-      if (!hasRealAlerts) {
-        const networkIds = networks.map((n) => n.id)
-        const testAlerts = await generateTestAlerts(organizations[0]?.id || "test_org", networkIds)
-        allAlerts.push(
-          ...testAlerts.map((alert) => ({
-            id: alert.id,
-            type: alert.type,
-            severity: alert.severity,
-            message: alert.message,
-            timestamp: alert.timestamp,
-            networkId: alert.networkId,
-            networkName: alert.networkName,
-            deviceSerial: alert.deviceSerial,
-            status: alert.status,
-          })),
-        )
-        setUseTestData(true)
-      } else {
-        setUseTestData(false)
-      }
-
-      setAlerts(allAlerts)
+    } catch (error) {
       toast({
-        title: "Alertas actualizadas",
-        description: `Se han cargado ${allAlerts.length} alertas${useTestData ? " (datos de prueba)" : ""} desde Meraki API`,
+        title: "Error",
+        description: "No se pudieron actualizar las alertas desde Meraki API",
       })
     } catch (error) {
       toast({
@@ -613,7 +644,7 @@ export default function MerakiDashboard() {
   }
 
   useEffect(() => {
-    if (alerts.length > lastAlertCount && lastAlertCount > 0) {
+    if (alerts.length > lastAlertCount && lastAlertCount > 0 && !isLoading) { // Avoid sound during initial load
       playAlertSound()
       toast({
         title: "Nueva alerta detectada",
@@ -622,7 +653,7 @@ export default function MerakiDashboard() {
       })
     }
     setLastAlertCount(alerts.length)
-  }, [alerts.length, lastAlertCount])
+  }, [alerts, lastAlertCount, isLoading]) // Added isLoading to dependencies
 
   useEffect(() => {
     return () => {
@@ -631,6 +662,38 @@ export default function MerakiDashboard() {
       }
     }
   }, [refreshInterval])
+
+  // useEffect to handle changes in selectedOrg
+  useEffect(() => {
+    if (selectedOrg && selectedOrg !== "all" && apiKey && isConnected) {
+      console.log(`Org seleccionada cambió a: ${selectedOrg}. Cargando datos...`)
+      // Clear previous data for a smoother transition (optional, loadDataForOrganization also clears)
+      // setAlerts([]);
+      // setNetworks([]);
+      const orgName = organizations.find(o => o.id === selectedOrg)?.name;
+      loadDataForOrganization(selectedOrg, orgName);
+    } else if (selectedOrg === "all" && isConnected) {
+      // Handle "all organizations" selection
+      setShowFallbackNetworkMessage(false); // Reset fallback message
+      // For now, we are optimizing away from loading all orgs initially.
+      // You might want to clear data or load data for the first org.
+      // setAlerts([]);
+      // setNetworks([]);
+      // if (organizations.length > 0) {
+      //   loadDataForOrganization(organizations[0].id);
+      //   setSelectedOrg(organizations[0].id); // Switch to the first org
+      // }
+      console.log("Selección 'Todas las organizaciones' - comportamiento por definir o desactivar carga masiva.")
+      // For now, do nothing or clear, as initial load is per-org
+       setAlerts([]);
+       setNetworks([]);
+       setUseTestData(false); // No data to show
+       toast({
+         title: "Seleccione una organización",
+         description: "Por favor, elija una organización específica para ver sus alertas.",
+       });
+    }
+  }, [selectedOrg, apiKey, isConnected, organizations]); // Added organizations to dependency for the "all" case
 
   const getSeverityIcon = (severity: string) => {
     switch (severity) {
@@ -655,18 +718,36 @@ export default function MerakiDashboard() {
     return <Badge variant={variants[severity as keyof typeof variants] || "default"}>{severity.toUpperCase()}</Badge>
   }
 
-  const filteredAlerts = alerts.filter((alert) => {
-    const matchesSearch =
-      alert.message.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      alert.networkName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      alert.deviceSerial.toLowerCase().includes(searchTerm.toLowerCase())
+  const filteredAlerts = useMemo(() => {
+    console.log("Memoizing filteredAlerts...", {
+      alertsLength: alerts.length,
+      searchTerm,
+      selectedOrg,
+      selectedNetwork,
+      selectedSeverity,
+      networksLength: networks.length,
+    });
+    return alerts.filter((alert) => {
+      const organizationIdForAlert = networks.find(n => n.id === alert.networkId)?.organizationId;
 
-    const matchesOrg = selectedOrg === "all" || alert.networkName.includes(selectedOrg)
-    const matchesNetwork = selectedNetwork === "all" || alert.networkId === selectedNetwork
-    const matchesSeverity = selectedSeverity === "all" || alert.severity === selectedSeverity
+      const matchesSearch =
+        alert.message.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        alert.networkName.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        (alert.deviceSerial && alert.deviceSerial.toLowerCase().includes(searchTerm.toLowerCase()));
 
-    return matchesSearch && matchesOrg && matchesNetwork && matchesSeverity
-  })
+      // Handle selectedOrg being an org ID or "all" / "Seleccione Organización..."
+      // The value "all" is used by the SelectItem placeholder.
+      const matchesOrg =
+        !selectedOrg || selectedOrg === "all"
+          ? true
+          : organizationIdForAlert === selectedOrg;
+
+      const matchesNetwork = selectedNetwork === "all" || alert.networkId === selectedNetwork;
+      const matchesSeverity = selectedSeverity === "all" || alert.severity === selectedSeverity;
+
+      return matchesSearch && matchesOrg && matchesNetwork && matchesSeverity;
+    });
+  }, [alerts, searchTerm, selectedOrg, selectedNetwork, selectedSeverity, networks]);
 
   // Pagination calculations
   const totalPages = Math.ceil(filteredAlerts.length / itemsPerPage)
@@ -1026,14 +1107,15 @@ export default function MerakiDashboard() {
                 onChange={(e) => setSearchTerm(e.target.value)}
               />
 
-              <Select value={selectedOrg} onValueChange={setSelectedOrg}>
+              <Select value={selectedOrg} onValueChange={(value) => setSelectedOrg(value)}>
                 <SelectTrigger>
                   <SelectValue placeholder="Organización" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="all">Todas las organizaciones</SelectItem>
+                  {/* Option to de-select or view "all" (behavior TBD) */}
+                  <SelectItem value="all">Seleccione Organización...</SelectItem>
                   {organizations.map((org) => (
-                    <SelectItem key={org.id} value={org.name}>
+                    <SelectItem key={org.id} value={org.id}> {/* Ensure value is org.id */}
                       {org.name}
                     </SelectItem>
                   ))}
@@ -1046,9 +1128,10 @@ export default function MerakiDashboard() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">Todas las redes</SelectItem>
+                  {/* Networks are now filtered by selectedOrg, so this list will be relevant */}
                   {networks.map((network) => (
                     <SelectItem key={network.id} value={network.id}>
-                      {network.name}
+                      {network.name} ({network.id}) {/* Displaying ID can be useful for debugging */}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -1101,14 +1184,24 @@ export default function MerakiDashboard() {
             <CardDescription>
               Mostrando {paginatedAlerts.length} de {filteredAlerts.length} alertas (Página {currentPage} de{" "}
               {totalPages}) - Período cargado: {getTimespanText(loadedTimespan)}
+              {showFallbackNetworkMessage && (
+                <p className="text-sm text-orange-600 mt-1">
+                  Nota: Las alertas se están cargando individualmente por red debido a limitaciones de la API para esta organización. Este proceso puede tardar más.
+                </p>
+              )}
             </CardDescription>
           </CardHeader>
           <CardContent>
             {isLoading ? (
               <div className="text-center py-8">
                 <RefreshCw className="h-12 w-12 text-blue-500 mx-auto mb-4 animate-spin" />
-                <h3 className="text-lg font-semibold mb-2">Cargando datos...</h3>
-                <p className="text-muted-foreground">Conectando con Meraki API y obteniendo alertas</p>
+                <h3 className="text-lg font-semibold mb-2">{loadingMessage || "Cargando datos..."}</h3>
+                <p className="text-muted-foreground">Conectando con Meraki API y obteniendo información.</p>
+                {showFallbackNetworkMessage && loadingMessage && loadingMessage.includes("alertas") && (
+                   <p className="text-sm text-orange-500 mt-2">
+                     El modo de carga alternativo está activo. Esto puede tomar más tiempo.
+                   </p>
+                )}
               </div>
             ) : !isConnected ? (
               <div className="text-center py-8">
