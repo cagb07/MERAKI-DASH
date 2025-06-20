@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useMemo } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -18,7 +18,7 @@ import {
 import { AlertTriangle, CheckCircle, Info, RefreshCw, Download, Trash2, Wifi, Shield, Activity } from "lucide-react"
 import { toast } from "@/hooks/use-toast"
 import { ThemeToggle } from "@/components/theme-toggle"
-import { validateApiKey, getNetworks, getAlerts, generateTestAlerts } from "@/lib/meraki-api"
+import { validateApiKey, getNetworks, getAlerts, generateTestAlerts, getAllHistoryAlerts } from "@/lib/meraki-api"
 
 interface Alert {
   id: string
@@ -52,10 +52,11 @@ export default function MerakiDashboard() {
   const [selectedOrg, setSelectedOrg] = useState<string>("all")
   const [selectedNetwork, setSelectedNetwork] = useState<string>("all")
   const [selectedSeverity, setSelectedSeverity] = useState<string>("all")
-  const [searchTerm, setSearchTerm] = useState("")
+  const [inputValue, setInputValue] = useState<string>("") // For immediate input
+  const [searchTerm, setSearchTerm] = useState("")      // For debounced search
   const [selectedAlert, setSelectedAlert] = useState<Alert | null>(null)
   const [selectedTimespan, setSelectedTimespan] = useState<number>(86400) // 24 horas por defecto
-  const [loadFullHistory, setLoadFullHistory] = useState(false)
+  // const [loadFullHistory, setLoadFullHistory] = useState(false); // This state is no longer needed / will be removed
   const [useTestData, setUseTestData] = useState(false)
 
   const [isLoadingMore, setIsLoadingMore] = useState(false)
@@ -73,7 +74,13 @@ export default function MerakiDashboard() {
   const [currentPage, setCurrentPage] = useState(1)
   const [itemsPerPage, setItemsPerPage] = useState(10)
 
+  const [fetchStatusMessages, setFetchStatusMessages] = useState<string[]>([])
+  const FULL_HISTORY_TIMESPAN = -1; // Special value to signify full history is loaded
+
   const connectToMeraki = async () => {
+    setFetchStatusMessages([])
+    let currentMessages: string[] = []
+
     if (!apiKey) {
       setShowApiKeyDialog(true)
       return
@@ -102,33 +109,37 @@ export default function MerakiDashboard() {
       console.log(`🏢 Organizaciones encontradas: ${organizations.length}`)
       setOrganizations(organizations.map((org) => ({ id: org.id, name: org.name })))
 
-      // Obtener redes de todas las organizaciones
-      console.log("🌐 Obteniendo redes...")
-      const allNetworks: Network[] = []
-      for (const org of organizations) {
-        try {
-          const networksResult = await getNetworks(apiKey, org.id)
-          if (networksResult.success) {
-            const orgNetworks = networksResult.data.map((net) => ({
-              id: net.id,
-              name: net.name,
-              organizationId: net.organizationId,
-            }))
-            allNetworks.push(...orgNetworks)
-            console.log(`📡 Redes en ${org.name}: ${orgNetworks.length}`)
-          }
-        } catch (error) {
-          console.error(`❌ Error obteniendo redes de ${org.name}:`, error)
+      // Obtener redes de todas las organizaciones en paralelo
+      console.log("🌐 Obteniendo redes en paralelo...")
+      const collectedNetworks: Network[] = []
+      const networkPromises = organizations.map((org) => getNetworks(apiKey, org.id))
+      const networkResults = await Promise.allSettled(networkPromises)
+
+      networkResults.forEach((result, index) => {
+        const org = organizations[index]
+        if (result.status === "fulfilled" && result.value.success) {
+          const orgNetworks = result.value.data.map((net: any) => ({
+            id: net.id,
+            name: net.name,
+            organizationId: net.organizationId,
+          }))
+          collectedNetworks.push(...orgNetworks)
+          console.log(`📡 Redes en ${org.name}: ${orgNetworks.length}`)
+        } else {
+          const errorReason = result.status === "rejected" ? result.reason : result.value.error;
+          const errorMessage = errorReason instanceof Error ? errorReason.message : String(errorReason);
+          console.error(`❌ Error obteniendo redes de ${org.name}:`, errorMessage)
+          currentMessages.push(`Error cargando redes para organización ${org.name}: ${errorMessage}`)
         }
-      }
-      console.log(`📡 Total redes: ${allNetworks.length}`)
-      setNetworks(allNetworks)
+      })
+      console.log(`📡 Total redes obtenidas: ${collectedNetworks.length}`)
+      setNetworks(collectedNetworks)
 
       // Generar alertas de prueba inmediatamente para mostrar algo
       console.log("🧪 Generando alertas de prueba para mostrar datos inmediatamente...")
       const testAlerts = await generateTestAlerts(
         organizations[0]?.id || "demo_org",
-        allNetworks.map((n) => n.id),
+        collectedNetworks.map((n) => n.id),
       )
       const initialAlerts = testAlerts.map((alert) => ({
         id: alert.id,
@@ -159,19 +170,20 @@ export default function MerakiDashboard() {
 
       // Ahora intentar obtener alertas reales en segundo plano
       console.log("🚨 Intentando obtener alertas reales en segundo plano...")
-      const realAlerts: Alert[] = []
+      const collectedRealAlerts: Alert[] = []
       let hasRealAlerts = false
 
-      for (const org of organizations) {
-        try {
-          console.log(`🔍 Procesando alertas de: ${org.name}`)
-          const alertsResult = await getAlerts(apiKey, org.id, 86400) // Solo 24 horas inicialmente
+      const alertPromises = organizations.map((org) => getAlerts(apiKey, org.id, 86400)) // Solo 24 horas inicialmente
+      const alertResults = await Promise.allSettled(alertPromises)
 
-          console.log(`📊 Resultado para ${org.name}:`, alertsResult)
-
-          if (alertsResult.success && alertsResult.data.length > 0) {
+      alertResults.forEach((result, index) => {
+        const org = organizations[index]
+        if (result.status === "fulfilled" && result.value.success) {
+          const alertsResult = result.value
+          console.log(`📊 Resultado de alertas para ${org.name}:`, alertsResult)
+          if (alertsResult.data.length > 0) {
             hasRealAlerts = true
-            const orgAlerts = alertsResult.data.map((alert) => ({
+            const orgAlerts = alertsResult.data.map((alert: any) => ({
               id: alert.id,
               type: alert.type,
               severity: alert.severity,
@@ -182,35 +194,54 @@ export default function MerakiDashboard() {
               deviceSerial: alert.deviceSerial || "N/A",
               status: alert.status,
             }))
-            realAlerts.push(...orgAlerts)
+            collectedRealAlerts.push(...orgAlerts)
             console.log(`✅ Alertas reales agregadas de ${org.name}: ${orgAlerts.length}`)
           } else {
-            console.log(`❌ Sin alertas reales en ${org.name}`)
+            console.log(`ℹ️ Sin alertas reales en ${org.name} o endpoint falló parcialmente.`)
           }
-        } catch (orgError) {
-          console.error(`❌ Error obteniendo alertas de ${org.name}:`, orgError)
+          if (alertsResult.fallback) {
+            const message = `Información parcial para organización ${org.name}: Se usó un método alternativo (Error original: ${alertsResult.initialError || "No especificado"})`;
+            console.warn(`⚠️ Fallback activado para ${org.name}. Error inicial: ${alertsResult.initialError}`);
+            currentMessages.push(message);
+          }
+          if (alertsResult.partialErrors && alertsResult.partialErrors.length > 0) {
+            const partialErrorSummary = alertsResult.partialErrors.map((pe: any) => `${pe.networkName || pe.networkId} (${pe.error})`).join(", ");
+            const message = `Algunas redes en organización ${org.name} tuvieron problemas: ${partialErrorSummary}`;
+            console.warn(`⚠️ Errores parciales obteniendo alertas de redes en ${org.name}:`, alertsResult.partialErrors);
+            currentMessages.push(message);
+          }
+        } else {
+          const errorReason = result.status === "rejected" ? result.reason : (result.value as any)?.error;
+          const errorMessage = errorReason instanceof Error ? errorReason.message : String(errorReason);
+          console.error(`❌ Error obteniendo alertas de ${org.name}:`, errorMessage);
+          currentMessages.push(`Error cargando alertas para organización ${org.name}: ${errorMessage}`);
         }
-      }
+      })
 
       // Si encontramos alertas reales, reemplazar las de prueba
-      if (hasRealAlerts && realAlerts.length > 0) {
-        console.log(`🎯 Reemplazando con ${realAlerts.length} alertas reales`)
-        setAlerts(realAlerts)
+      if (hasRealAlerts && collectedRealAlerts.length > 0) {
+        console.log(`🎯 Reemplazando con ${collectedRealAlerts.length} alertas reales`)
+        setAlerts(collectedRealAlerts)
         setUseTestData(false)
 
         toast({
           title: "Alertas reales cargadas",
-          description: `Se encontraron ${realAlerts.length} alertas reales de las últimas 24 horas`,
+          description: `Se encontraron ${collectedRealAlerts.length} alertas reales de las últimas 24 horas.`,
         })
       } else {
-        console.log(`🧪 Manteniendo ${initialAlerts.length} alertas de prueba`)
+        console.log(`🧪 Manteniendo ${initialAlerts.length} alertas de prueba, no se encontraron alertas reales o hubo errores.`)
       }
-    } catch (error) {
-      console.error("❌ Error en conexión:", error)
+      setFetchStatusMessages(currentMessages);
+    } catch (error) { // This outer catch handles errors like API key validation failure
+      console.error("❌ Error en conexión (validación API Key o error crítico):", error)
+      const criticalErrorMsg = error instanceof Error ? error.message : "Error desconocido durante la conexión inicial.";
+      currentMessages.push(`Error crítico durante la conexión: ${criticalErrorMsg}`);
+      setFetchStatusMessages(currentMessages);
+      setIsLoading(false); // Ensure loading is stopped
 
       // En caso de error, al menos mostrar datos de prueba
-      console.log("🧪 Generando alertas de prueba debido a error...")
-      const fallbackAlerts = await generateTestAlerts("error_org", ["error_network"])
+      console.log("🧪 Generando alertas de prueba debido a error crítico...")
+      const fallbackAlerts = await generateTestAlerts("error_org", collectedNetworks.map(n => n.id).length > 0 ? collectedNetworks.map(n => n.id) : ["error_network"]);
       const errorAlerts = fallbackAlerts.map((alert) => ({
         id: alert.id,
         type: alert.type,
@@ -241,6 +272,8 @@ export default function MerakiDashboard() {
   }
 
   const loadMoreAlerts = async () => {
+    setFetchStatusMessages([]);
+    let currentMessages: string[] = [];
     if (!isConnected || !apiKey || isLoadingMore) return
 
     // Mostrar advertencia antes de cargar más datos
@@ -259,19 +292,22 @@ export default function MerakiDashboard() {
 
     setIsLoadingMore(true)
     try {
-      console.log(`🔄 Cargando más alertas hasta ${timespanText}...`)
+      console.log(`🔄 Cargando más alertas hasta ${timespanText} en paralelo...`)
 
-      const allAlerts: Alert[] = []
-      let hasRealAlerts = false
+      const collectedMoreAlerts: Alert[] = []
+      let hasNewRealAlerts = false // To track if any new real alerts were fetched in this batch
 
-      for (const org of organizations) {
-        try {
-          console.log(`🔍 Cargando más alertas de: ${org.name}`)
-          const alertsResult = await getAlerts(apiKey, org.id, nextTimespan)
+      const alertPromises = organizations.map((org) => getAlerts(apiKey, org.id, nextTimespan))
+      const alertResults = await Promise.allSettled(alertPromises)
 
-          if (alertsResult.success && alertsResult.data.length > 0) {
-            hasRealAlerts = true
-            const orgAlerts = alertsResult.data.map((alert) => ({
+      alertResults.forEach((result, index) => {
+        const org = organizations[index]
+        if (result.status === "fulfilled" && result.value.success) {
+          const alertsResult = result.value
+          console.log(`📊 Resultado de carga de más alertas para ${org.name}:`, alertsResult)
+          if (alertsResult.data.length > 0) {
+            hasNewRealAlerts = true
+            const orgAlerts = alertsResult.data.map((alert: any) => ({
               id: alert.id,
               type: alert.type,
               severity: alert.severity,
@@ -282,45 +318,68 @@ export default function MerakiDashboard() {
               deviceSerial: alert.deviceSerial || "N/A",
               status: alert.status,
             }))
-            allAlerts.push(...orgAlerts)
+            collectedMoreAlerts.push(...orgAlerts)
+            console.log(`✅ Más alertas reales agregadas de ${org.name}: ${orgAlerts.length}`)
+          } else {
+            console.log(`ℹ️ Sin más alertas reales en ${org.name} para este timespan o endpoint falló parcialmente.`)
           }
-        } catch (orgError) {
-          console.error(`❌ Error cargando más alertas de ${org.name}:`, orgError)
+          if (alertsResult.fallback) {
+            const message = `Información parcial para ${org.name} (más alertas): Método alternativo usado (Error original: ${alertsResult.initialError || "No especificado"})`;
+            console.warn(`⚠️ Fallback activado para ${org.name} durante carga de más alertas. Error inicial: ${alertsResult.initialError}`);
+            currentMessages.push(message);
+          }
+          if (alertsResult.partialErrors && alertsResult.partialErrors.length > 0) {
+            const partialErrorSummary = alertsResult.partialErrors.map((pe: any) => `${pe.networkName || pe.networkId} (${pe.error})`).join(", ");
+            const message = `Algunas redes en ${org.name} tuvieron problemas al cargar más alertas: ${partialErrorSummary}`;
+            console.warn(`⚠️ Errores parciales obteniendo más alertas de redes en ${org.name}:`, alertsResult.partialErrors);
+            currentMessages.push(message);
+          }
+        } else {
+          const errorReason = result.status === "rejected" ? result.reason : (result.value as any)?.error;
+          const errorMessage = errorReason instanceof Error ? errorReason.message : String(errorReason);
+          console.error(`❌ Error cargando más alertas de ${org.name}:`, errorMessage);
+          currentMessages.push(`Error cargando más alertas para organización ${org.name}: ${errorMessage}`);
         }
+      })
+
+      // Si no hay nuevas alertas reales y estábamos usando datos de prueba, podríamos generar más,
+      // pero para "loadMore" es más probable que queramos solo lo real.
+      // Si se decide generar más datos de prueba aquí, se debe tener cuidado con duplicados.
+      // Por ahora, nos enfocamos en agregar las alertas reales o mantener las existentes.
+
+      let finalAlertsToSet: Alert[];
+      if (collectedMoreAlerts.length > 0) {
+        // Combinar con alertas existentes y luego filtrar duplicados
+        const combinedAlerts = [...alerts, ...collectedMoreAlerts];
+        finalAlertsToSet = combinedAlerts.filter((alert, index, self) => index === self.findIndex((a) => a.id === alert.id));
+        console.log(` combinado ${alerts.length} existentes con ${collectedMoreAlerts.length} nuevas. Total después de duplicados: ${finalAlertsToSet.length}`)
+        setUseTestData(false); // Si cargamos más alertas reales, ya no estamos solo con datos de prueba
+      } else if (useTestData) {
+        // Si no se cargaron nuevas alertas reales y estábamos en modo de prueba, mantenemos las de prueba.
+        // Opcionalmente, generar más datos de prueba aquí si es la lógica deseada.
+        finalAlertsToSet = [...alerts]; // Mantener las actuales de prueba
+        console.log("No se cargaron nuevas alertas reales, se mantienen las de prueba existentes.");
+      } else {
+        // No hay nuevas alertas reales y no estábamos en modo de prueba, simplemente no hay nada nuevo que agregar.
+        finalAlertsToSet = [...alerts]; // Mantener las actuales
+        console.log("No se cargaron nuevas alertas reales.");
       }
 
-      // Si no hay alertas reales y estamos usando datos de prueba, generar más
-      if (!hasRealAlerts && useTestData) {
-        const networkIds = networks.map((n) => n.id)
-        const testAlerts = await generateTestAlerts(organizations[0]?.id || "test_org", networkIds)
-        allAlerts.push(
-          ...testAlerts.map((alert) => ({
-            id: alert.id,
-            type: alert.type,
-            severity: alert.severity,
-            message: alert.message,
-            timestamp: alert.timestamp,
-            networkId: alert.networkId,
-            networkName: alert.networkName,
-            deviceSerial: alert.deviceSerial,
-            status: alert.status,
-          })),
-        )
-      }
-
-      // Eliminar duplicados basados en ID
-      const uniqueAlerts = allAlerts.filter((alert, index, self) => index === self.findIndex((a) => a.id === alert.id))
-
-      setAlerts(uniqueAlerts)
+      setAlerts(finalAlertsToSet)
       setLoadedTimespan(nextTimespan)
 
       toast({
         title: "Más alertas cargadas",
-        description: `Se han cargado ${uniqueAlerts.length} alertas de ${timespanText}${useTestData ? " (datos de prueba)" : ""}`,
+        description: `Se han procesado alertas de ${timespanText}. Total actual: ${finalAlertsToSet.length} alertas.${(useTestData && !hasNewRealAlerts) ? " (datos de prueba)" : ""}`,
       })
-    } catch (error) {
+      setFetchStatusMessages(currentMessages);
+    } catch (error) { // Catch para errores críticos en Promise.allSettled o configuración
+      console.error("❌ Error crítico en loadMoreAlerts:", error)
+      const criticalErrorMsg = error instanceof Error ? error.message : "Error desconocido al cargar más alertas.";
+      currentMessages.push(`Error crítico al cargar más alertas: ${criticalErrorMsg}`);
+      setFetchStatusMessages(currentMessages);
       toast({
-        title: "Error",
+        title: "Error Crítico",
         description: "No se pudieron cargar más alertas desde Meraki API",
         variant: "destructive",
       })
@@ -355,8 +414,97 @@ export default function MerakiDashboard() {
   }
 
   const canLoadMore = (): boolean => {
-    return loadedTimespan < 7776000 && !useTestData
+    return loadedTimespan !== FULL_HISTORY_TIMESPAN && loadedTimespan < 7776000 && !useTestData
   }
+
+  const fetchAllHistoryData = async () => {
+    if (!isConnected || !apiKey) return;
+    if (isLoading || isLoadingMore) return; // Prevent if another major load is in progress
+
+    setIsLoading(true);
+    const initialMessages = ["Iniciando carga de historial completo. Esto puede tardar varios minutos..."];
+    setFetchStatusMessages(initialMessages);
+    toast({ title: "Cargando Historial Completo", description: "Por favor espera, obteniendo todos los datos históricos disponibles..." });
+
+    let currentMessages: string[] = [...initialMessages];
+
+    try {
+      const allHistoricalAlerts: Alert[] = [];
+
+      const orgsToFetch = selectedOrg === 'all' ? organizations : organizations.filter(o => o.id === selectedOrg);
+
+      if (orgsToFetch.length === 0 && selectedOrg !== 'all') {
+           currentMessages.push(`Organización seleccionada con ID '${selectedOrg}' no encontrada para cargar historial.`);
+           setFetchStatusMessages(currentMessages);
+           setIsLoading(false);
+           toast({ title: "Error", description: "Organización seleccionada no encontrada.", variant: "destructive"});
+           return;
+      }
+       if (orgsToFetch.length === 0 && organizations.length > 0 && selectedOrg === 'all') {
+        currentMessages.push("No hay organizaciones disponibles para cargar el historial (estado inesperado).");
+        setFetchStatusMessages(currentMessages);
+        setIsLoading(false);
+        toast({ title: "Error", description: "No se encontraron organizaciones para procesar.", variant: "destructive"});
+        return;
+      }
+      if (orgsToFetch.length === 0 && selectedOrg === 'all' && organizations.length === 0) {
+        currentMessages.push("No hay organizaciones configuradas. Conéctese primero.");
+         setFetchStatusMessages(currentMessages);
+        setIsLoading(false);
+        toast({ title: "Información", description: "No hay organizaciones para obtener historial.", variant: "default"});
+        return;
+      }
+
+      const historyPromises = orgsToFetch.map(org => getAllHistoryAlerts(apiKey, org.id));
+      const historyResults = await Promise.allSettled(historyPromises);
+
+      historyResults.forEach((result: any, index: number) => {
+        const org = orgsToFetch[index];
+        if (result.status === 'fulfilled' && result.value.success) {
+          const mappedAlerts = result.value.data.map((alert: any) => ({
+            id: alert.id,
+            type: alert.type,
+            severity: alert.severity,
+            message: alert.message,
+            timestamp: alert.timestamp,
+            networkId: alert.networkId,
+            networkName: alert.networkName,
+            deviceSerial: alert.deviceSerial || "N/A",
+            status: alert.status,
+          }));
+          allHistoricalAlerts.push(...mappedAlerts);
+          currentMessages.push(`Historial completo cargado para ${org.name} (${mappedAlerts.length} alertas).`);
+
+          if (result.value.fetchErrors && result.value.fetchErrors.length > 0) {
+            const errorSummary = result.value.fetchErrors.map((fe: any) => `Chunk ${fe.chunk} (t0: ${fe.t0}, t1: ${fe.t1}): ${fe.message || fe.error || 'Error desconocido en chunk'}`).join('; ');
+            currentMessages.push(`Errores parciales en historial de ${org.name}: ${errorSummary}`);
+          }
+        } else {
+          const errorReason = result.status === 'rejected' ? result.reason : (result.value as any)?.error;
+          const errorMessage = errorReason instanceof Error ? errorReason.message : String(errorReason);
+          currentMessages.push(`Error cargando historial completo para ${org.name}: ${errorMessage}`);
+          console.error(`Error cargando historial completo para ${org.name}:`, errorReason);
+        }
+      });
+
+      allHistoricalAlerts.sort((a,b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+      setAlerts(allHistoricalAlerts);
+      setUseTestData(false);
+      setLoadedTimespan(FULL_HISTORY_TIMESPAN);
+      currentMessages.push("Carga de historial completo finalizada.");
+      setFetchStatusMessages(currentMessages);
+      toast({ title: "Historial Completo Cargado", description: `Se cargaron ${allHistoricalAlerts.length} alertas históricas.` });
+
+    } catch (error) {
+      console.error("Error crítico durante fetchAllHistoryData:", error);
+      const criticalErrorMsg = error instanceof Error ? error.message : "Desconocido";
+      currentMessages.push(`Error crítico al cargar historial completo: ${criticalErrorMsg}`);
+      setFetchStatusMessages(currentMessages);
+      toast({ title: "Error Crítico", description: "No se pudo cargar el historial completo.", variant: "destructive" });
+    } finally {
+      setIsLoading(false); // Reset loading state
+    }
+  };
 
   const disconnectFromMeraki = () => {
     setIsConnected(false)
@@ -384,21 +532,27 @@ export default function MerakiDashboard() {
   }
 
   const refreshAlerts = async () => {
+    setFetchStatusMessages([]);
+    let currentMessages: string[] = [];
     if (!isConnected || !apiKey) return
 
     setIsLoading(true)
     try {
-      const allAlerts: Alert[] = []
-      let hasRealAlerts = false
+      console.log(`🔄 Refrescando alertas para el timespan ${getTimespanText(loadedTimespan)} en paralelo...`)
+      const refreshedAlerts: Alert[] = []
+      let hasRefreshedRealAlerts = false
 
-      // Obtener alertas actualizadas de todas las organizaciones
-      for (const org of organizations) {
-        try {
-          const alertsResult = await getAlerts(apiKey, org.id, loadedTimespan)
+      const alertPromises = organizations.map((org) => getAlerts(apiKey, org.id, loadedTimespan))
+      const alertResults = await Promise.allSettled(alertPromises)
 
-          if (alertsResult.success && alertsResult.data.length > 0) {
-            hasRealAlerts = true
-            const orgAlerts = alertsResult.data.map((alert) => ({
+      alertResults.forEach((result, index) => {
+        const org = organizations[index]
+        if (result.status === "fulfilled" && result.value.success) {
+          const alertsResult = result.value
+          console.log(`📊 Resultado de refresco de alertas para ${org.name}:`, alertsResult)
+          if (alertsResult.data.length > 0) {
+            hasRefreshedRealAlerts = true
+            const orgAlerts = alertsResult.data.map((alert: any) => ({
               id: alert.id,
               type: alert.type,
               severity: alert.severity,
@@ -409,43 +563,71 @@ export default function MerakiDashboard() {
               deviceSerial: alert.deviceSerial || "N/A",
               status: alert.status,
             }))
-            allAlerts.push(...orgAlerts)
+            refreshedAlerts.push(...orgAlerts)
+            console.log(`✅ Alertas refrescadas agregadas de ${org.name}: ${orgAlerts.length}`)
+          } else {
+            console.log(`ℹ️ Sin alertas (o nuevas alertas) en ${org.name} durante el refresco.`)
           }
-        } catch (error) {
-          console.error(`Error refrescando alertas de ${org.name}:`, error)
+          if (alertsResult.fallback) {
+            const message = `Información parcial para ${org.name} (refresco): Método alternativo usado (Error original: ${alertsResult.initialError || "No especificado"})`;
+            console.warn(`⚠️ Fallback activado para ${org.name} durante refresco. Error inicial: ${alertsResult.initialError}`);
+            currentMessages.push(message);
+          }
+          if (alertsResult.partialErrors && alertsResult.partialErrors.length > 0) {
+            const partialErrorSummary = alertsResult.partialErrors.map((pe: any) => `${pe.networkName || pe.networkId} (${pe.error})`).join(", ");
+            const message = `Algunas redes en ${org.name} tuvieron problemas durante el refresco: ${partialErrorSummary}`;
+            console.warn(`⚠️ Errores parciales obteniendo alertas refrescadas de redes en ${org.name}:`, alertsResult.partialErrors);
+            currentMessages.push(message);
+          }
+        } else {
+          const errorReason = result.status === "rejected" ? result.reason : (result.value as any)?.error;
+          const errorMessage = errorReason instanceof Error ? errorReason.message : String(errorReason);
+          console.error(`❌ Error refrescando alertas de ${org.name}:`, errorMessage);
+          currentMessages.push(`Error refrescando alertas para organización ${org.name}: ${errorMessage}`);
         }
-      }
-
-      // Si no hay alertas reales, mantener las de prueba o generar nuevas
-      if (!hasRealAlerts) {
-        const networkIds = networks.map((n) => n.id)
-        const testAlerts = await generateTestAlerts(organizations[0]?.id || "test_org", networkIds)
-        allAlerts.push(
-          ...testAlerts.map((alert) => ({
-            id: alert.id,
-            type: alert.type,
-            severity: alert.severity,
-            message: alert.message,
-            timestamp: alert.timestamp,
-            networkId: alert.networkId,
-            networkName: alert.networkName,
-            deviceSerial: alert.deviceSerial,
-            status: alert.status,
-          })),
-        )
-        setUseTestData(true)
-      } else {
-        setUseTestData(false)
-      }
-
-      setAlerts(allAlerts)
-      toast({
-        title: "Alertas actualizadas",
-        description: `Se han cargado ${allAlerts.length} alertas${useTestData ? " (datos de prueba)" : ""} desde Meraki API`,
       })
-    } catch (error) {
+
+      if (hasRefreshedRealAlerts && refreshedAlerts.length > 0) {
+        setAlerts(refreshedAlerts) // Sobrescribir con las alertas más recientes
+        setUseTestData(false)
+        toast({
+          title: "Alertas actualizadas",
+          description: `Se han cargado ${refreshedAlerts.length} alertas desde Meraki API.`,
+        })
+      } else if (!hasRefreshedRealAlerts && organizations.length > 0) { // Solo generar test data si no hay orgs o si no hay data real
+        console.log("🧪 No se encontraron alertas reales durante el refresco. Generando/manteniendo datos de prueba.")
+        const networkIds = networks.map((n) => n.id)
+        const testAlerts = await generateTestAlerts(organizations[0]?.id || "test_org_refresh", networkIds.length > 0 ? networkIds : ["test_net_refresh"])
+        setAlerts(testAlerts.map((alert: any) => ({
+            id: alert.id, type: alert.type, severity: alert.severity, message: alert.message,
+            timestamp: alert.timestamp, networkId: alert.networkId, networkName: alert.networkName,
+            deviceSerial: alert.deviceSerial, status: alert.status,
+        })))
+        setUseTestData(true)
+        toast({
+          title: "Datos de prueba actualizados",
+          description: `No se encontraron alertas reales. Mostrando ${testAlerts.length} alertas de prueba.`,
+        })
+      } else {
+         // No organizations or no alerts and no errors, keep current state or clear if appropriate
+        console.log("No hay organizaciones para refrescar o no se retornaron alertas.")
+        if (organizations.length === 0) { // If no orgs, likely disconnected state, clear alerts
+            setAlerts([]);
+            setUseTestData(false);
+        }
+        toast({
+          title: "Sin Alertas Nuevas",
+          description: "No se encontraron nuevas alertas durante la actualización.",
+        });
+      }
+      setFetchStatusMessages(currentMessages);
+    } catch (error) { // Catch para errores críticos
+      console.error("❌ Error crítico en refreshAlerts:", error)
+      const criticalErrorMsg = error instanceof Error ? error.message : "Error desconocido durante el refresco.";
+      currentMessages.push(`Error crítico durante el refresco: ${criticalErrorMsg}`);
+      setFetchStatusMessages(currentMessages);
       toast({
-        title: "Error",
+        title: "Error Crítico",
         description: "No se pudieron actualizar las alertas desde Meraki API",
         variant: "destructive",
       })
@@ -655,18 +837,21 @@ export default function MerakiDashboard() {
     return <Badge variant={variants[severity as keyof typeof variants] || "default"}>{severity.toUpperCase()}</Badge>
   }
 
-  const filteredAlerts = alerts.filter((alert) => {
-    const matchesSearch =
-      alert.message.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      alert.networkName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      alert.deviceSerial.toLowerCase().includes(searchTerm.toLowerCase())
+  const filteredAlerts = useMemo(() => {
+    const lowerSearchTerm = searchTerm.toLowerCase()
+    return alerts.filter((alert) => {
+      const matchesSearch =
+        alert.message.toLowerCase().includes(lowerSearchTerm) ||
+        (alert.networkName && alert.networkName.toLowerCase().includes(lowerSearchTerm)) || // Check networkName
+        (alert.deviceSerial && alert.deviceSerial.toLowerCase().includes(lowerSearchTerm)) // Check deviceSerial
 
-    const matchesOrg = selectedOrg === "all" || alert.networkName.includes(selectedOrg)
-    const matchesNetwork = selectedNetwork === "all" || alert.networkId === selectedNetwork
-    const matchesSeverity = selectedSeverity === "all" || alert.severity === selectedSeverity
+      const matchesOrg = selectedOrg === "all" || (alert.networkName && alert.networkName.includes(selectedOrg))
+      const matchesNetwork = selectedNetwork === "all" || alert.networkId === selectedNetwork
+      const matchesSeverity = selectedSeverity === "all" || alert.severity === selectedSeverity
 
-    return matchesSearch && matchesOrg && matchesNetwork && matchesSeverity
-  })
+      return matchesSearch && matchesOrg && matchesNetwork && matchesSeverity
+    })
+  }, [alerts, searchTerm, selectedOrg, selectedNetwork, selectedSeverity])
 
   // Pagination calculations
   const totalPages = Math.ceil(filteredAlerts.length / itemsPerPage)
@@ -688,8 +873,19 @@ export default function MerakiDashboard() {
 
   useEffect(() => {
     console.log(`🔄 Estado de alerts cambió: ${alerts.length} alertas`)
-    console.log("Alertas actuales:", alerts)
+    // console.log("Alertas actuales:", alerts) // Can be too verbose, uncomment if needed
   }, [alerts])
+
+  // Debounce search term
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setSearchTerm(inputValue);
+    }, 300); // 300ms debounce delay
+
+    return () => {
+      clearTimeout(handler);
+    };
+  }, [inputValue]); // Only re-run the effect if inputValue changes
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 dark:from-slate-900 dark:to-slate-800 p-4">
@@ -786,6 +982,19 @@ export default function MerakiDashboard() {
                 </Button>
               )}
 
+              {isConnected && (
+                <Button
+                  onClick={fetchAllHistoryData}
+                  disabled={isLoading || isLoadingMore || loadedTimespan === FULL_HISTORY_TIMESPAN}
+                  variant="outline"
+                  className="bg-teal-50 hover:bg-teal-100 border-teal-200 dark:bg-teal-900/30 dark:hover:bg-teal-800/50 dark:border-teal-700"
+                  title="Carga aproximadamente 1 año de historial. Puede ser lento."
+                >
+                  <Download className="h-4 w-4 mr-2" />
+                  Cargar Historial Completo (lento)
+                </Button>
+              )}
+
               {isConnected && canLoadMore() && (
                 <Button
                   onClick={loadMoreAlerts}
@@ -849,6 +1058,33 @@ export default function MerakiDashboard() {
             </div>
           </CardContent>
         </Card>
+
+        {/* Fetch Status Messages */}
+        {fetchStatusMessages.length > 0 && (
+          <Card className="mt-4">
+            <CardHeader className="flex flex-row items-center justify-between">
+              <CardTitle className="text-orange-600 dark:text-orange-400 flex items-center">
+                <Info className="h-5 w-5 mr-2" />
+                Registro de Actividad y Advertencias
+              </CardTitle>
+              <Button variant="outline" size="sm" onClick={() => setFetchStatusMessages([])} className="ml-auto">
+                <Trash2 className="h-3 w-3 mr-1" />
+                Limpiar Log
+              </Button>
+            </CardHeader>
+            <CardContent className="space-y-2 max-h-48 overflow-y-auto">
+              {fetchStatusMessages.map((msg, index) => (
+                <div
+                  key={index}
+                  className="text-sm p-2 bg-orange-50 dark:bg-orange-900/30 border border-orange-200 dark:border-orange-700 rounded-md"
+                >
+                  {/* Icon already in CardTitle, or add here if preferred per message */}
+                  {msg}
+                </div>
+              ))}
+            </CardContent>
+          </Card>
+        )}
 
         {/* Statistics */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -1022,8 +1258,8 @@ export default function MerakiDashboard() {
             <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
               <Input
                 placeholder="Buscar alertas..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
+                value={inputValue}
+                onChange={(e) => setInputValue(e.target.value)}
               />
 
               <Select value={selectedOrg} onValueChange={setSelectedOrg}>
@@ -1067,18 +1303,28 @@ export default function MerakiDashboard() {
               </Select>
 
               <Select
-                value={loadFullHistory ? "full" : selectedTimespan.toString()}
+                value={loadedTimespan === FULL_HISTORY_TIMESPAN ? "full" : selectedTimespan.toString()}
                 onValueChange={(value) => {
                   if (value === "full") {
-                    setLoadFullHistory(true)
+                    // setLoadFullHistory(true); // loadFullHistory state is removed
+                    fetchAllHistoryData();
                   } else {
-                    setLoadFullHistory(false)
-                    setSelectedTimespan(Number.parseInt(value))
+                    // setLoadFullHistory(false); // loadFullHistory state is removed
+                    const newTimespan = Number.parseInt(value)
+                    setSelectedTimespan(newTimespan);
+                    if (loadedTimespan !== newTimespan || loadedTimespan === FULL_HISTORY_TIMESPAN) {
+                        // Reset loadedTimespan to the new standard timespan if it's different or if full history was loaded
+                        setLoadedTimespan(newTimespan);
+                        setAlerts([]); // Clear alerts to indicate a new period needs loading/refresh
+                        setFetchStatusMessages(prev => [...prev, `Período cambiado a ${getTimespanText(newTimespan)}. Presiona 'Actualizar' o 'Reconectar' para cargar datos.`]);
+                        toast({ title: "Período Cambiado", description: `Seleccionaste ${getTimespanText(newTimespan)}. Actualiza para ver las alertas.`});
+                    }
                   }
                 }}
               >
                 <SelectTrigger>
                   <SelectValue placeholder="Período" />
+                  {loadedTimespan === FULL_HISTORY_TIMESPAN && <span className="ml-2 text-xs text-muted-foreground">(Historial Completo)</span>}
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="3600">Última hora</SelectItem>
@@ -1087,7 +1333,7 @@ export default function MerakiDashboard() {
                   <SelectItem value="604800">Última semana</SelectItem>
                   <SelectItem value="2592000">Último mes</SelectItem>
                   <SelectItem value="7776000">Últimos 3 meses</SelectItem>
-                  <SelectItem value="full">Todo el historial disponible</SelectItem>
+                  <SelectItem value="full" disabled>Todo el historial disponible (Usar botón dedicado)</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -1100,7 +1346,7 @@ export default function MerakiDashboard() {
             <CardTitle>Alertas Activas</CardTitle>
             <CardDescription>
               Mostrando {paginatedAlerts.length} de {filteredAlerts.length} alertas (Página {currentPage} de{" "}
-              {totalPages}) - Período cargado: {getTimespanText(loadedTimespan)}
+              {totalPages}) - Período cargado: {loadedTimespan === FULL_HISTORY_TIMESPAN ? "Historial Completo" : getTimespanText(loadedTimespan)}
             </CardDescription>
           </CardHeader>
           <CardContent>

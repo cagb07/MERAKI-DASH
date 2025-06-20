@@ -136,21 +136,56 @@ export async function getAlerts(apiKey: string, organizationId: string, timespan
 
     if (!response.ok) {
       // Si no funciona el endpoint de organización, intentamos con redes individuales
-      console.log("Endpoint de organización falló, intentando con redes individuales...")
-      return await getAlertsFromNetworks(apiKey, organizationId, timespan)
+      const error = new Error(`API call to /organizations/${organizationId}/alerts/history failed with status ${response.status}`);
+      console.warn(`Endpoint de organización falló (status: ${response.status}), intentando con redes individuales... Error: ${error.message}`);
+      const fallbackResult = await getAlertsFromNetworks(apiKey, organizationId, timespan);
+      // Ensure fallbackResult has a clearly defined structure even on its own internal failures
+      if (fallbackResult.success) {
+        return {
+          ...fallbackResult,
+          fallback: true,
+          initialError: error.message,
+        };
+      } else {
+        // If getAlertsFromNetworks also fails, return its error and the initial error
+        return {
+          success: false,
+          error: fallbackResult.error,
+          initialError: error.message,
+          fallback: true,
+          data: [], // Ensure data is always an array
+        };
+      }
     }
 
     const alertsData = await response.json()
     console.log(`Alertas obtenidas: ${alertsData.length}`)
 
     // Transformar los datos de Meraki al formato de nuestra aplicación
-    const alerts: MerakiAlert[] = alertsData.map((alert: any, index: number) => ({
-      id: alert.id || alert.alertId || `alert_${organizationId}_${index}`,
-      type: alert.type || alert.alertType || "unknown",
-      message: alert.message || alert.details || alert.description || "Sin mensaje",
-      timestamp: alert.occurredAt || alert.timestamp || alert.time || new Date().toISOString(),
-      networkId: alert.networkId || alert.network?.id || "",
-      networkName: alert.networkName || alert.network?.name || "Red desconocida",
+    const alerts: MerakiAlert[] = alertsData.map((alert: any, index: number) => {
+      let id_var_name = alert.id || alert.alertId;
+      if (!id_var_name) {
+        id_var_name = `generated_org_${organizationId}_${index}`;
+        console.warn(`Generated fallback ID for alert. Entity: ${organizationId}, Index: ${index}. Original alert data:`, alert);
+      }
+
+      const alertMessage = alert.message || alert.details || alert.description;
+      if (!alertMessage) {
+        console.warn(`Alert message is missing for alert ID '${id_var_name}'. Using default. Original alert:`, alert);
+      }
+
+      const alertTimestamp = alert.occurredAt || alert.timestamp || alert.time;
+      if (!alertTimestamp) {
+        console.warn(`Alert timestamp is missing for alert ID '${id_var_name}'. Using current time as default. Original alert:`, alert);
+      }
+
+      return {
+        id: id_var_name,
+        type: alert.type || alert.alertType || "unknown",
+        message: alertMessage || "Sin mensaje",
+        timestamp: alertTimestamp || new Date().toISOString(),
+        networkId: alert.networkId || alert.network?.id || "",
+        networkName: alert.networkName || alert.network?.name || "Red desconocida",
       deviceSerial: alert.deviceSerial || alert.device?.serial || alert.serial || "",
       deviceName: alert.deviceName || alert.device?.name || alert.name || "",
       severity: mapSeverity(alert.type || alert.alertType, alert.category || alert.severity),
@@ -160,13 +195,15 @@ export async function getAlerts(apiKey: string, organizationId: string, timespan
     return {
       success: true,
       data: alerts,
-    }
+      fallback: false, // Explicitly set fallback to false for primary success
+    };
   } catch (error) {
-    console.error("Error obteniendo alertas:", error)
+    console.error(`Error obteniendo alertas para organización ${organizationId}:`, error);
     return {
       success: false,
       error: error instanceof Error ? error.message : "Error desconocido",
-    }
+      data: [], // Ensure data is always an array on error
+    };
   }
 }
 
@@ -179,49 +216,97 @@ export async function getAlertsFromNetworks(apiKey: string, organizationId: stri
     }
 
     const allAlerts: MerakiAlert[] = []
+    const partialErrors: { networkId: string; networkName: string; error: string }[] = []
 
-    // Obtenemos alertas de cada red
-    for (const network of networksResult.data) {
+    // Create an array of promises for fetching alerts from each network
+    const alertPromises = networksResult.data.map(async (network) => {
       try {
         const response = await fetch(`${MERAKI_API_BASE}/networks/${network.id}/alerts/history?timespan=${timespan}`, {
           headers: {
             "X-Cisco-Meraki-API-Key": apiKey,
             "Content-Type": "application/json",
           },
-        })
+        });
 
-        if (response.ok) {
-          const alertsData = await response.json()
-          console.log(`Alertas de red ${network.name}: ${alertsData.length}`)
+        if (!response.ok) {
+          // This error will be caught by the outer catch and handled by Promise.allSettled
+          throw new Error(`Failed with status ${response.status} ${response.statusText}`);
+        }
 
-          const networkAlerts: MerakiAlert[] = alertsData.map((alert: any, index: number) => ({
-            id: alert.id || alert.alertId || `alert_${network.id}_${index}`,
+        const alertsData = await response.json();
+        const networkAlerts: MerakiAlert[] = alertsData.map((alert: any, index: number) => {
+          let id_var_name = alert.id || alert.alertId;
+          if (!id_var_name) {
+            id_var_name = `generated_net_${network.id}_${index}`;
+            console.warn(`Generated fallback ID for alert. Entity: ${network.id}, Index: ${index}. Original alert data:`, alert);
+          }
+
+          const alertMessage = alert.message || alert.details || alert.description;
+          if (!alertMessage) {
+            console.warn(`Alert message is missing for alert ID '${id_var_name}'. Using default. Original alert:`, alert);
+          }
+
+          const alertTimestamp = alert.occurredAt || alert.timestamp || alert.time;
+          if (!alertTimestamp) {
+            console.warn(`Alert timestamp is missing for alert ID '${id_var_name}'. Using current time as default. Original alert:`, alert);
+          }
+
+          return {
+            id: id_var_name,
             type: alert.type || alert.alertType || "unknown",
-            message: alert.message || alert.details || alert.description || "Sin mensaje",
-            timestamp: alert.occurredAt || alert.timestamp || alert.time || new Date().toISOString(),
+            message: alertMessage || "Sin mensaje",
+            timestamp: alertTimestamp || new Date().toISOString(),
             networkId: network.id,
             networkName: network.name,
             deviceSerial: alert.deviceSerial || alert.device?.serial || alert.serial || "",
             deviceName: alert.deviceName || alert.device?.name || alert.name || "",
             severity: mapSeverity(alert.type || alert.alertType, alert.category || alert.severity),
             status: alert.dismissed || alert.resolved ? "resolved" : "active",
-          }))
-
-          allAlerts.push(...networkAlerts)
-        }
-      } catch (networkError) {
-        console.error(`Error obteniendo alertas de red ${network.name}:`, networkError)
+          };
+        });
+        // Return a structure that Promise.allSettled can work with if we didn't want its auto-wrapping
+        // but since we do, we just return the data for a 'fulfilled' case.
+        return { networkId: network.id, networkName: network.name, data: networkAlerts, count: networkAlerts.length };
+      } catch (networkError: any) {
+        // This makes sure that an error in one network's fetch/processing
+        // gets caught and can be reported in partialErrors.
+        // Promise.allSettled expects a rejection to be an Error or similar.
+        // We will package it with more info.
+        throw { networkId: network.id, networkName: network.name, error: networkError.message };
       }
-    }
+    });
+
+    // Execute all promises in parallel and wait for all to settle
+    const results = await Promise.allSettled(alertPromises);
+
+    results.forEach(result => {
+      if (result.status === 'fulfilled') {
+        allAlerts.push(...result.value.data);
+        console.log(`Successfully fetched ${result.value.count} alerts from network ${result.value.networkName} (${result.value.networkId})`);
+      } else if (result.status === 'rejected') {
+        // The 'reason' here is what we threw in the catch block of the promise
+        const errorInfo = result.reason as { networkId: string; networkName: string; error: string };
+        console.error(`Error obteniendo alertas de red ${errorInfo.networkName} (${errorInfo.networkId}):`, errorInfo.error);
+        partialErrors.push({
+          networkId: errorInfo.networkId,
+          networkName: errorInfo.networkName,
+          error: errorInfo.error
+        });
+      }
+    });
 
     return {
-      success: true,
+      success: true, // Overall operation is successful if getNetworks worked, even with partial failures
       data: allAlerts,
+      partialErrors: partialErrors,
     }
   } catch (error) {
+    console.error(`Error in getAlertsFromNetworks for organization ${organizationId}:`, error);
     return {
       success: false,
       error: error instanceof Error ? error.message : "Error desconocido",
+      data: [], // Ensure data is always an array
+      partialErrors: [], // Ensure partialErrors is always an array
     }
   }
 }
@@ -241,13 +326,30 @@ export async function getNetworkAlerts(apiKey: string, networkId: string, timesp
 
     const alertsData = await response.json()
 
-    const alerts: MerakiAlert[] = alertsData.map((alert: any, index: number) => ({
-      id: alert.id || alert.alertId || `alert_${networkId}_${index}`,
-      type: alert.type || alert.alertType || "unknown",
-      message: alert.message || alert.details || alert.description || "Sin mensaje",
-      timestamp: alert.occurredAt || alert.timestamp || alert.time || new Date().toISOString(),
-      networkId: networkId,
-      networkName: alert.networkName || "Red desconocida",
+    const alerts: MerakiAlert[] = alertsData.map((alert: any, index: number) => {
+      let id_var_name = alert.id || alert.alertId;
+      if (!id_var_name) {
+        id_var_name = `generated_net_${networkId}_${index}`;
+        console.warn(`Generated fallback ID for alert. Entity: ${networkId}, Index: ${index}. Original alert data:`, alert);
+      }
+
+      const alertMessage = alert.message || alert.details || alert.description;
+      if (!alertMessage) {
+        console.warn(`Alert message is missing for alert ID '${id_var_name}'. Using default. Original alert:`, alert);
+      }
+
+      const alertTimestamp = alert.occurredAt || alert.timestamp || alert.time;
+      if (!alertTimestamp) {
+        console.warn(`Alert timestamp is missing for alert ID '${id_var_name}'. Using current time as default. Original alert:`, alert);
+      }
+
+      return {
+        id: id_var_name,
+        type: alert.type || alert.alertType || "unknown",
+        message: alertMessage || "Sin mensaje",
+        timestamp: alertTimestamp || new Date().toISOString(),
+        networkId: networkId,
+        networkName: alert.networkName || "Red desconocida", // Potentially enhance if network details are available
       deviceSerial: alert.deviceSerial || alert.device?.serial || alert.serial || "",
       deviceName: alert.deviceName || alert.device?.name || alert.name || "",
       severity: mapSeverity(alert.type || alert.alertType, alert.category || alert.severity),
@@ -259,9 +361,11 @@ export async function getNetworkAlerts(apiKey: string, networkId: string, timesp
       data: alerts,
     }
   } catch (error) {
+    console.error(`Error in getNetworkAlerts for network ${networkId}:`, error);
     return {
       success: false,
       error: error instanceof Error ? error.message : "Error desconocido",
+      data: [], // Ensure data is always an array
     }
   }
 }
@@ -271,68 +375,141 @@ export async function getAllHistoryAlerts(apiKey: string, organizationId: string
     // Meraki permite máximo 90 días en una sola consulta
     const maxTimespan = 7776000 // 90 días
     const allAlerts: MerakiAlert[] = []
+    const fetchErrors: { chunk?: number; t0?: number; t1?: number; networkId?: string; networkName?: string; error: string }[] = []
 
-    // Obtener alertas de los últimos 90 días
-    let currentDate = new Date()
-    let endDate = new Date(currentDate.getTime() - maxTimespan * 1000)
+    // Meraki permite máximo 90 días en una sola consulta
+    const maxTimespan = 7776000 // 90 días en segundos
+    const allAlerts: MerakiAlert[] = []
+    // fetchErrors will store more structured error info
+    const fetchErrors: { chunk: number; t0: number; t1: number; type: string; message: string; details?: any }[] = []
 
-    // Hacer hasta 4 consultas para obtener ~1 año de historial
+    // 1. Prepare Chunk Date Ranges
+    const chunkDateRanges: { t0: number; t1: number; chunkIndex: number }[] = []
+    let currentEndDate = new Date()
     for (let i = 0; i < 4; i++) {
-      const t0 = Math.floor(endDate.getTime() / 1000)
-      const t1 = Math.floor(currentDate.getTime() / 1000)
+      const t1 = Math.floor(currentEndDate.getTime() / 1000)
+      const t0 = Math.floor(currentEndDate.getTime() / 1000) - maxTimespan
+      chunkDateRanges.push({ t0, t1, chunkIndex: i })
+      currentEndDate = new Date(t0 * 1000) // Use t0 for the next iteration's end date
+    }
+
+    // 2. Create an array of promises for fetching each chunk
+    const chunkPromises = chunkDateRanges.map(async (range) => {
+      const { t0, t1, chunkIndex } = range
+      const chunkAlerts: MerakiAlert[] = []
+      const chunkSpecificErrors: typeof fetchErrors = [] // Errors specific to this chunk processing
 
       try {
         const response = await fetch(
           `${MERAKI_API_BASE}/organizations/${organizationId}/alerts/history?t0=${t0}&t1=${t1}`,
           {
-            headers: {
-              "X-Cisco-Meraki-API-Key": apiKey,
-              "Content-Type": "application/json",
-            },
-          },
-        )
+            headers: { "X-Cisco-Meraki-API-Key": apiKey, "Content-Type": "application/json" },
+          }
+        );
 
         if (response.ok) {
-          const alertsData = await response.json()
-
-          const alerts: MerakiAlert[] = alertsData.map((alert: any, index: number) => ({
-            id: alert.id || alert.alertId || `alert_${organizationId}_${i}_${index}`,
-            type: alert.type || alert.alertType || "unknown",
-            message: alert.message || alert.details || alert.description || "Sin mensaje",
-            timestamp: alert.occurredAt || alert.timestamp || alert.time || new Date().toISOString(),
-            networkId: alert.networkId || alert.network?.id || "",
-            networkName: alert.networkName || alert.network?.name || "Red desconocida",
-            deviceSerial: alert.deviceSerial || alert.device?.serial || alert.serial || "",
-            deviceName: alert.deviceName || alert.device?.name || alert.name || "",
-            severity: mapSeverity(alert.type || alert.alertType, alert.category || alert.severity),
-            status: alert.dismissed || alert.resolved ? "resolved" : "active",
-          }))
-
-          allAlerts.push(...alerts)
+          const alertsData = await response.json();
+          console.log(`Chunk ${chunkIndex + 1}: Successfully fetched ${alertsData.length} alerts for organization ${organizationId} (t0: ${t0}, t1: ${t1})`);
+          const mappedAlerts: MerakiAlert[] = alertsData.map((alert: any, index: number) => {
+            let id_var_name = alert.id || alert.alertId;
+            if (!id_var_name) {
+              id_var_name = `generated_org_chunk_${organizationId}_${chunkIndex}_${index}`;
+              console.warn(`Generated fallback ID for alert. Entity: ${organizationId} (chunk ${chunkIndex + 1}), Index: ${index}. Original alert data:`, alert);
+            }
+            const alertMessage = alert.message || alert.details || alert.description;
+            if (!alertMessage) console.warn(`Alert message is missing for alert ID '${id_var_name}'. Using default. Original alert:`, alert);
+            const alertTimestamp = alert.occurredAt || alert.timestamp || alert.time;
+            if (!alertTimestamp) console.warn(`Alert timestamp is missing for alert ID '${id_var_name}'. Using current time as default. Original alert:`, alert);
+            return {
+              id: id_var_name,
+              type: alert.type || alert.alertType || "unknown",
+              message: alertMessage || "Sin mensaje",
+              timestamp: alertTimestamp || new Date().toISOString(),
+              networkId: alert.networkId || alert.network?.id || "",
+              networkName: alert.networkName || alert.network?.name || "Red desconocida",
+              deviceSerial: alert.deviceSerial || alert.device?.serial || alert.serial || "",
+              deviceName: alert.deviceName || alert.device?.name || alert.name || "",
+              severity: mapSeverity(alert.type || alert.alertType, alert.category || alert.severity),
+              status: alert.dismissed || alert.resolved ? "resolved" : "active",
+            };
+          });
+          chunkAlerts.push(...mappedAlerts);
         } else {
-          // Si falla el endpoint de organización, intentamos con redes
-          const networkAlertsResult = await getAlertsFromNetworks(apiKey, organizationId, maxTimespan)
+          const errorMsg = `Organization-level alert fetch failed for chunk ${chunkIndex + 1} (t0: ${t0}, t1: ${t1}) with status ${response.status}. Attempting fallback.`;
+          console.warn(errorMsg);
+          chunkSpecificErrors.push({ chunk: chunkIndex + 1, t0, t1, type: "ORG_FETCH_FAILED", message: `Org API call failed: ${response.status}` });
+
+          const chunkTimespanForFallback = t1 - t0; // This is maxTimespan
+          const networkAlertsResult = await getAlertsFromNetworks(apiKey, organizationId, chunkTimespanForFallback);
+
           if (networkAlertsResult.success) {
-            allAlerts.push(...networkAlertsResult.data)
+            chunkAlerts.push(...networkAlertsResult.data);
+            console.log(`Chunk ${chunkIndex + 1}: Successfully fetched ${networkAlertsResult.data.length} alerts via network fallback.`);
+            if (networkAlertsResult.partialErrors && networkAlertsResult.partialErrors.length > 0) {
+              console.warn(`Chunk ${chunkIndex + 1}: Fallback to networks had partial errors.`);
+              networkAlertsResult.partialErrors.forEach(pError => {
+                chunkSpecificErrors.push({
+                  chunk: chunkIndex + 1, t0, t1, type: "NETWORK_PARTIAL_ERROR",
+                  message: `Partial error in network ${pError.networkName || pError.networkId}: ${pError.error}`,
+                  details: pError
+                });
+              });
+            }
+          } else {
+            const fallbackErrorMsg = `Fallback to network-level fetch also failed for chunk ${chunkIndex + 1}. Error: ${networkAlertsResult.error}`;
+            console.error(fallbackErrorMsg);
+            chunkSpecificErrors.push({ chunk: chunkIndex + 1, t0, t1, type: "NETWORK_FALLBACK_FAILED", message: `Network fallback failed: ${networkAlertsResult.error}` });
           }
         }
-      } catch (error) {
-        console.error(`Error en consulta ${i + 1}:`, error)
+      } catch (error: any) {
+        console.error(`Critical error processing chunk ${chunkIndex + 1} (t0: ${t0}, t1: ${t1}):`, error.message);
+        chunkSpecificErrors.push({ chunk: chunkIndex + 1, t0, t1, type: "CHUNK_PROCESSING_ERROR", message: error.message });
       }
+      return { chunk: chunkIndex + 1, alerts: chunkAlerts, errors: chunkSpecificErrors };
+    });
 
-      // Preparar para la siguiente iteración
-      currentDate = new Date(endDate)
-      endDate = new Date(currentDate.getTime() - maxTimespan * 1000)
-    }
+    // 3. Execute in Parallel
+    const settledChunkResults = await Promise.allSettled(chunkPromises);
+
+    // 4. Aggregate Results
+    settledChunkResults.forEach(result => {
+      if (result.status === 'fulfilled') {
+        allAlerts.push(...result.value.alerts);
+        fetchErrors.push(...result.value.errors); // Add errors collected from this chunk's processing
+      } else {
+        // This means the promise for a chunk itself was rejected, a more critical failure for that chunk.
+        // The 'reason' might not have t0, t1 if the error happened before 'range' was available in promise scope.
+        // However, our setup ensures range is available.
+        const reason = result.reason as any;
+        console.error(`Chunk promise rejected: `, reason);
+        // Try to get chunk info if possible, otherwise log a general chunk failure
+        const chunkInfo = reason.chunk !== undefined ? `chunk ${reason.chunk}` : `one of the chunks`;
+        fetchErrors.push({
+          chunk: reason.chunk ?? -1, // -1 or similar to indicate unknown chunk if not available
+          t0: reason.t0 ?? 0,
+          t1: reason.t1 ?? 0,
+          type: "CHUNK_PROMISE_REJECTED",
+          message: `Processing for ${chunkInfo} failed entirely: ${reason.message || String(reason)}`,
+          details: reason
+        });
+      }
+    });
+
+    // Sort alerts by timestamp descending after all are collected
+    allAlerts.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
 
     return {
-      success: true,
+      success: true, // The overall operation tried to fetch all data. Errors are in fetchErrors.
       data: allAlerts,
+      fetchErrors: fetchErrors,
     }
   } catch (error) {
+    console.error(`Critical error in getAllHistoryAlerts for organization ${organizationId}:`, error);
     return {
       success: false,
       error: error instanceof Error ? error.message : "Error desconocido",
+      data: [],
+      fetchErrors: fetchErrors, // Include any errors collected before the critical failure
     }
   }
 }
@@ -441,5 +618,15 @@ function mapSeverity(type: string, category?: string): "critical" | "warning" | 
     return "warning"
   }
 
-  return "info"
+  // Point 5: Enhanced mapSeverity logic
+  const knownInfoTypes = ["client_connection_failed"]; // Add other known informational types if any
+  if (!knownInfoTypes.some(t => lowerType.includes(t)) &&
+      !criticalTypes.some(t => lowerType.includes(t)) &&
+      !warningTypes.some(t => lowerType.includes(t)) &&
+      !lowerCategory.includes("info") &&
+      !lowerCategory.includes("warn") && !lowerCategory.includes("warning") &&
+      !lowerCategory.includes("error") && !lowerCategory.includes("critical")) {
+    console.warn(`Unknown alert type "${type}" (category: "${category}") mapped to INFO by default. Original alert type: ${type}, category: ${category}. Consider updating severity mappings.`);
+  }
+  return "info";
 }
