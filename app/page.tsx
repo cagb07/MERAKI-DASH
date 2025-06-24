@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -54,115 +54,80 @@ export default function MerakiDashboard() {
   const [searchTerm, setSearchTerm] = useState("")
   const [selectedAlert, setSelectedAlert] = useState<Alert | null>(null)
 
-  const [apiKey, setApiKey] = useState<string>("")
-  const [showApiKeyDialog, setShowApiKeyDialog] = useState(false)
-  const [tempApiKey, setTempApiKey] = useState<string>("")
+  // Initialize with sample data
+  useEffect(() => {
+    const sampleAlerts: Alert[] = [
+      {
+        id: "alert_001",
+        type: "gateway_down",
+        severity: "critical",
+        message: "Gateway MX84 en oficina principal desconectado",
+        timestamp: new Date().toISOString(),
+        networkId: "N_123456789",
+        networkName: "Oficina Principal",
+        deviceSerial: "Q2XX-XXXX-XXXX",
+        status: "active",
+      },
+      {
+        id: "alert_002",
+        type: "high_cpu_usage",
+        severity: "warning",
+        message: "Uso alto de CPU en switch MS220-8P",
+        timestamp: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+        networkId: "N_987654321",
+        networkName: "Sucursal Norte",
+        deviceSerial: "Q2YY-YYYY-YYYY",
+        status: "acknowledged",
+      },
+      {
+        id: "alert_003",
+        type: "client_connection_failed",
+        severity: "info",
+        message: "Múltiples fallos de conexión de clientes en AP MR36",
+        timestamp: new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString(),
+        networkId: "N_456789123",
+        networkName: "Planta Baja",
+        deviceSerial: "Q2ZZ-ZZZZ-ZZZZ",
+        status: "resolved",
+      },
+    ]
+
+    const sampleOrgs: Organization[] = [
+      { id: "org_1", name: "Oficina Principal" },
+      { id: "org_2", name: "Sucursal Norte" },
+      { id: "org_3", name: "Planta Baja" },
+    ]
+
+    const sampleNetworks: Network[] = [
+      { id: "N_123456789", name: "Red Principal", organizationId: "org_1" },
+      { id: "N_987654321", name: "Red Sucursal", organizationId: "org_2" },
+      { id: "N_456789123", name: "Red Planta Baja", organizationId: "org_3" },
+    ]
+
+    setAlerts(sampleAlerts)
+    setOrganizations(sampleOrgs)
+    setNetworks(sampleNetworks)
+  }, [])
 
   const connectToMeraki = async () => {
-    if (!apiKey) {
-      setShowApiKeyDialog(true)
-      return
-    }
-
     setIsLoading(true)
     try {
-      // Simulate API connection with the provided API key
+      // Simulate API connection
       await new Promise((resolve) => setTimeout(resolve, 2000))
-
-      // Basic API key validation (Meraki API keys are typically 40 characters)
-      if (apiKey.length < 20) {
-        throw new Error("API Key parece ser inválida. Debe tener al menos 20 caracteres.")
-      }
-
-      // Simulate fetching organizations after successful connection
-      const sampleOrgs: Organization[] = [
-        { id: "org_1", name: "Oficina Principal" },
-        { id: "org_2", name: "Sucursal Norte" },
-        { id: "org_3", name: "Planta Baja" },
-      ]
-
-      const sampleNetworks: Network[] = [
-        { id: "N_123456789", name: "Red Principal", organizationId: "org_1" },
-        { id: "N_987654321", name: "Red Sucursal", organizationId: "org_2" },
-        { id: "N_456789123", name: "Red Planta Baja", organizationId: "org_3" },
-      ]
-
-      const sampleAlerts: Alert[] = [
-        {
-          id: "alert_001",
-          type: "gateway_down",
-          severity: "critical",
-          message: "Gateway MX84 en oficina principal desconectado",
-          timestamp: new Date().toISOString(),
-          networkId: "N_123456789",
-          networkName: "Oficina Principal",
-          deviceSerial: "Q2XX-XXXX-XXXX",
-          status: "active",
-        },
-        {
-          id: "alert_002",
-          type: "high_cpu_usage",
-          severity: "warning",
-          message: "Uso alto de CPU en switch MS220-8P",
-          timestamp: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
-          networkId: "N_987654321",
-          networkName: "Sucursal Norte",
-          deviceSerial: "Q2YY-YYYY-YYYY",
-          status: "acknowledged",
-        },
-        {
-          id: "alert_003",
-          type: "client_connection_failed",
-          severity: "info",
-          message: "Múltiples fallos de conexión de clientes en AP MR36",
-          timestamp: new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString(),
-          networkId: "N_456789123",
-          networkName: "Planta Baja",
-          deviceSerial: "Q2ZZ-ZZZZ-ZZZZ",
-          status: "resolved",
-        },
-      ]
-
-      // Set all the data after successful connection
-      setOrganizations(sampleOrgs)
-      setNetworks(sampleNetworks)
-      setAlerts(sampleAlerts)
       setIsConnected(true)
-
       toast({
         title: "Conexión exitosa",
-        description: `Conectado a Meraki Dashboard. Cargadas ${sampleOrgs.length} organizaciones y ${sampleAlerts.length} alertas.`,
+        description: "Conectado a Meraki Dashboard",
       })
     } catch (error) {
       toast({
         title: "Error de conexión",
-        description: error instanceof Error ? error.message : "No se pudo conectar a Meraki API",
+        description: "No se pudo conectar a Meraki API",
         variant: "destructive",
       })
     } finally {
       setIsLoading(false)
     }
-  }
-
-  const disconnectFromMeraki = () => {
-    setIsConnected(false)
-    setApiKey("")
-    setAlerts([])
-    setOrganizations([])
-    setNetworks([])
-    setSelectedOrg("all")
-    setSelectedNetwork("all")
-    setSelectedSeverity("all")
-    setSearchTerm("")
-    toast({
-      title: "Desconectado",
-      description: "Se ha desconectado de Meraki Dashboard y limpiado todos los datos",
-    })
-  }
-
-  const changeApiKey = () => {
-    setTempApiKey(apiKey)
-    setShowApiKeyDialog(true)
   }
 
   const refreshAlerts = async () => {
@@ -222,26 +187,6 @@ export default function MerakiDashboard() {
     toast({
       title: "Alertas limpiadas",
       description: "Todas las alertas han sido eliminadas",
-    })
-  }
-
-  const handleApiKeySubmit = () => {
-    if (tempApiKey.length < 20) {
-      toast({
-        title: "Error",
-        description: "API Key debe tener al menos 20 caracteres",
-        variant: "destructive",
-      })
-      return
-    }
-
-    setApiKey(tempApiKey)
-    setShowApiKeyDialog(false)
-    setTempApiKey("")
-
-    toast({
-      title: "API Key actualizada",
-      description: "Tu API Key ha sido actualizada correctamente",
     })
   }
 
@@ -318,23 +263,6 @@ export default function MerakiDashboard() {
                 {isConnected ? "Reconectar" : "Conectar"}
               </Button>
 
-              {isConnected && (
-                <Button onClick={changeApiKey} variant="outline" size="sm">
-                  Cambiar API Key
-                </Button>
-              )}
-
-              {isConnected && (
-                <Button
-                  onClick={disconnectFromMeraki}
-                  variant="outline"
-                  size="sm"
-                  className="text-red-600 hover:text-red-700"
-                >
-                  Desconectar
-                </Button>
-              )}
-
               <Button onClick={refreshAlerts} disabled={!isConnected || isLoading} variant="outline">
                 <RefreshCw className="h-4 w-4 mr-2" />
                 Actualizar
@@ -350,8 +278,7 @@ export default function MerakiDashboard() {
                 Limpiar
               </Button>
 
-              <div className="ml-auto flex items-center gap-2">
-                {apiKey && <div className="text-xs text-muted-foreground">API: {apiKey.substring(0, 8)}...</div>}
+              <div className="ml-auto">
                 <Badge variant={isConnected ? "default" : "secondary"}>
                   {isConnected ? "Conectado" : "Desconectado"}
                 </Badge>
@@ -468,191 +395,110 @@ export default function MerakiDashboard() {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            {!isConnected ? (
-              <div className="text-center py-8">
-                <Wifi className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
-                <h3 className="text-lg font-semibold mb-2">No conectado</h3>
-                <p className="text-muted-foreground mb-4">Conecta con tu API Key de Meraki para ver las alertas</p>
-                <Button onClick={() => setShowApiKeyDialog(true)}>
-                  <Wifi className="h-4 w-4 mr-2" />
-                  Conectar ahora
-                </Button>
-              </div>
-            ) : filteredAlerts.length === 0 ? (
-              <div className="text-center py-8">
-                <CheckCircle className="h-12 w-12 text-green-500 mx-auto mb-4" />
-                <h3 className="text-lg font-semibold mb-2">No hay alertas</h3>
-                <p className="text-muted-foreground">
-                  No se encontraron alertas que coincidan con los filtros actuales
-                </p>
-              </div>
-            ) : (
-              <div className="rounded-md border">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Severidad</TableHead>
-                      <TableHead>Tipo</TableHead>
-                      <TableHead>Mensaje</TableHead>
-                      <TableHead>Red</TableHead>
-                      <TableHead>Dispositivo</TableHead>
-                      <TableHead>Estado</TableHead>
-                      <TableHead>Fecha</TableHead>
-                      <TableHead>Acciones</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {filteredAlerts.map((alert) => (
-                      <TableRow key={alert.id}>
-                        <TableCell>
-                          <div className="flex items-center gap-2">
-                            {getSeverityIcon(alert.severity)}
-                            {getSeverityBadge(alert.severity)}
-                          </div>
-                        </TableCell>
-                        <TableCell className="font-medium">
-                          {alert.type.replace("_", " ").replace(/\b\w/g, (l) => l.toUpperCase())}
-                        </TableCell>
-                        <TableCell className="max-w-xs truncate">{alert.message}</TableCell>
-                        <TableCell>{alert.networkName}</TableCell>
-                        <TableCell className="font-mono text-sm">{alert.deviceSerial}</TableCell>
-                        <TableCell>
-                          <Badge variant={alert.status === "active" ? "destructive" : "secondary"}>
-                            {alert.status.toUpperCase()}
-                          </Badge>
-                        </TableCell>
-                        <TableCell>{new Date(alert.timestamp).toLocaleString()}</TableCell>
-                        <TableCell>
-                          <Dialog>
-                            <DialogTrigger asChild>
-                              <Button variant="outline" size="sm" onClick={() => setSelectedAlert(alert)}>
-                                Ver Detalles
-                              </Button>
-                            </DialogTrigger>
-                            <DialogContent className="max-w-2xl">
-                              <DialogHeader>
-                                <DialogTitle>Detalles de la Alerta</DialogTitle>
-                                <DialogDescription>Información completa de la alerta seleccionada</DialogDescription>
-                              </DialogHeader>
-                              {selectedAlert && (
-                                <div className="space-y-4">
-                                  <div className="grid grid-cols-2 gap-4">
-                                    <div>
-                                      <label className="text-sm font-medium">ID de Alerta</label>
-                                      <p className="text-sm text-muted-foreground">{selectedAlert.id}</p>
-                                    </div>
-                                    <div>
-                                      <label className="text-sm font-medium">Tipo</label>
-                                      <p className="text-sm text-muted-foreground">{selectedAlert.type}</p>
-                                    </div>
-                                    <div>
-                                      <label className="text-sm font-medium">Severidad</label>
-                                      <div className="flex items-center gap-2 mt-1">
-                                        {getSeverityIcon(selectedAlert.severity)}
-                                        {getSeverityBadge(selectedAlert.severity)}
-                                      </div>
-                                    </div>
-                                    <div>
-                                      <label className="text-sm font-medium">Estado</label>
-                                      <p className="text-sm text-muted-foreground">{selectedAlert.status}</p>
+            <div className="rounded-md border">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Severidad</TableHead>
+                    <TableHead>Tipo</TableHead>
+                    <TableHead>Mensaje</TableHead>
+                    <TableHead>Red</TableHead>
+                    <TableHead>Dispositivo</TableHead>
+                    <TableHead>Estado</TableHead>
+                    <TableHead>Fecha</TableHead>
+                    <TableHead>Acciones</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {filteredAlerts.map((alert) => (
+                    <TableRow key={alert.id}>
+                      <TableCell>
+                        <div className="flex items-center gap-2">
+                          {getSeverityIcon(alert.severity)}
+                          {getSeverityBadge(alert.severity)}
+                        </div>
+                      </TableCell>
+                      <TableCell className="font-medium">
+                        {alert.type.replace("_", " ").replace(/\b\w/g, (l) => l.toUpperCase())}
+                      </TableCell>
+                      <TableCell className="max-w-xs truncate">{alert.message}</TableCell>
+                      <TableCell>{alert.networkName}</TableCell>
+                      <TableCell className="font-mono text-sm">{alert.deviceSerial}</TableCell>
+                      <TableCell>
+                        <Badge variant={alert.status === "active" ? "destructive" : "secondary"}>
+                          {alert.status.toUpperCase()}
+                        </Badge>
+                      </TableCell>
+                      <TableCell>{new Date(alert.timestamp).toLocaleString()}</TableCell>
+                      <TableCell>
+                        <Dialog>
+                          <DialogTrigger asChild>
+                            <Button variant="outline" size="sm" onClick={() => setSelectedAlert(alert)}>
+                              Ver Detalles
+                            </Button>
+                          </DialogTrigger>
+                          <DialogContent className="max-w-2xl">
+                            <DialogHeader>
+                              <DialogTitle>Detalles de la Alerta</DialogTitle>
+                              <DialogDescription>Información completa de la alerta seleccionada</DialogDescription>
+                            </DialogHeader>
+                            {selectedAlert && (
+                              <div className="space-y-4">
+                                <div className="grid grid-cols-2 gap-4">
+                                  <div>
+                                    <label className="text-sm font-medium">ID de Alerta</label>
+                                    <p className="text-sm text-muted-foreground">{selectedAlert.id}</p>
+                                  </div>
+                                  <div>
+                                    <label className="text-sm font-medium">Tipo</label>
+                                    <p className="text-sm text-muted-foreground">{selectedAlert.type}</p>
+                                  </div>
+                                  <div>
+                                    <label className="text-sm font-medium">Severidad</label>
+                                    <div className="flex items-center gap-2 mt-1">
+                                      {getSeverityIcon(selectedAlert.severity)}
+                                      {getSeverityBadge(selectedAlert.severity)}
                                     </div>
                                   </div>
                                   <div>
-                                    <label className="text-sm font-medium">Mensaje</label>
-                                    <p className="text-sm text-muted-foreground">{selectedAlert.message}</p>
+                                    <label className="text-sm font-medium">Estado</label>
+                                    <p className="text-sm text-muted-foreground">{selectedAlert.status}</p>
                                   </div>
-                                  <div className="grid grid-cols-2 gap-4">
-                                    <div>
-                                      <label className="text-sm font-medium">Red</label>
-                                      <p className="text-sm text-muted-foreground">{selectedAlert.networkName}</p>
-                                    </div>
-                                    <div>
-                                      <label className="text-sm font-medium">Dispositivo</label>
-                                      <p className="text-sm text-muted-foreground font-mono">
-                                        {selectedAlert.deviceSerial}
-                                      </p>
-                                    </div>
+                                </div>
+                                <div>
+                                  <label className="text-sm font-medium">Mensaje</label>
+                                  <p className="text-sm text-muted-foreground">{selectedAlert.message}</p>
+                                </div>
+                                <div className="grid grid-cols-2 gap-4">
+                                  <div>
+                                    <label className="text-sm font-medium">Red</label>
+                                    <p className="text-sm text-muted-foreground">{selectedAlert.networkName}</p>
                                   </div>
                                   <div>
-                                    <label className="text-sm font-medium">Fecha y Hora</label>
-                                    <p className="text-sm text-muted-foreground">
-                                      {new Date(selectedAlert.timestamp).toLocaleString()}
+                                    <label className="text-sm font-medium">Dispositivo</label>
+                                    <p className="text-sm text-muted-foreground font-mono">
+                                      {selectedAlert.deviceSerial}
                                     </p>
                                   </div>
                                 </div>
-                              )}
-                            </DialogContent>
-                          </Dialog>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
-            )}
+                                <div>
+                                  <label className="text-sm font-medium">Fecha y Hora</label>
+                                  <p className="text-sm text-muted-foreground">
+                                    {new Date(selectedAlert.timestamp).toLocaleString()}
+                                  </p>
+                                </div>
+                              </div>
+                            )}
+                          </DialogContent>
+                        </Dialog>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
           </CardContent>
         </Card>
-        {/* API Key Dialog */}
-        <Dialog open={showApiKeyDialog} onOpenChange={setShowApiKeyDialog}>
-          <DialogContent className="sm:max-w-md">
-            <DialogHeader>
-              <DialogTitle className="flex items-center gap-2">
-                <Shield className="h-5 w-5" />
-                Configurar API Key de Meraki
-              </DialogTitle>
-              <DialogDescription>
-                Ingresa tu API Key de Meraki Dashboard para conectarte. Puedes encontrarla en tu perfil de Meraki
-                Dashboard.
-              </DialogDescription>
-            </DialogHeader>
-            <div className="space-y-4">
-              <div className="space-y-2">
-                <label htmlFor="apikey" className="text-sm font-medium">
-                  API Key
-                </label>
-                <Input
-                  id="apikey"
-                  type="password"
-                  placeholder="Ingresa tu API Key de Meraki..."
-                  value={tempApiKey}
-                  onChange={(e) => setTempApiKey(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      handleApiKeySubmit()
-                    }
-                  }}
-                />
-                <p className="text-xs text-muted-foreground">
-                  El API Key debe tener al menos 20 caracteres y se mantendrá seguro en tu sesión.
-                </p>
-              </div>
-
-              {apiKey && (
-                <div className="p-3 bg-muted rounded-lg">
-                  <p className="text-sm font-medium mb-1">API Key Actual:</p>
-                  <p className="text-xs font-mono text-muted-foreground">
-                    {apiKey.substring(0, 12)}...{apiKey.substring(apiKey.length - 4)}
-                  </p>
-                </div>
-              )}
-
-              <div className="flex justify-end gap-2">
-                <Button
-                  variant="outline"
-                  onClick={() => {
-                    setShowApiKeyDialog(false)
-                    setTempApiKey("")
-                  }}
-                >
-                  Cancelar
-                </Button>
-                <Button onClick={handleApiKeySubmit} disabled={!tempApiKey.trim()}>
-                  {apiKey ? "Actualizar" : "Conectar"}
-                </Button>
-              </div>
-            </div>
-          </DialogContent>
-        </Dialog>
       </div>
     </div>
   )
