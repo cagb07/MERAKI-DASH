@@ -122,8 +122,14 @@ export async function getAlerts(apiKey: string, organizationId: string, timespan
     console.log(`Obteniendo alertas para organización ${organizationId} con timespan ${timespan}`)
 
     // Primero intentamos obtener alertas de la organización
+    // Documentation: https://developer.cisco.com/meraki/api-v1/get-organization-alerts/
+    // The old endpoint /alerts/history is deprecated. The new one is /alerts.
+    // It uses tsStart and tsEnd instead of timespan.
+    const now = Math.floor(Date.now() / 1000);
+    const tsStart = now - timespan;
+
     const response = await fetch(
-      `${MERAKI_API_BASE}/organizations/${organizationId}/alerts/history?timespan=${timespan}`,
+      `${MERAKI_API_BASE}/organizations/${organizationId}/alerts?tsStart=${tsStart}`,
       {
         headers: {
           "X-Cisco-Meraki-API-Key": apiKey,
@@ -132,12 +138,16 @@ export async function getAlerts(apiKey: string, organizationId: string, timespan
       },
     )
 
-    console.log(`Respuesta de alertas: ${response.status}`)
+    console.log(`Respuesta de alertas (nuevo endpoint /alerts): ${response.status}`)
 
     if (!response.ok) {
       // Si no funciona el endpoint de organización, intentamos con redes individuales
-      const error = new Error(`API call to /organizations/${organizationId}/alerts/history failed with status ${response.status}`);
-      console.warn(`Endpoint de organización falló (status: ${response.status}), intentando con redes individuales... Error: ${error.message}`);
+      // getAlertsFromNetworks still uses /networks/{networkId}/alerts/history, which might also be deprecated.
+      // For now, we keep the fallback logic as is, but this might need further review.
+      // Documentation for network alerts: https://developer.cisco.com/meraki/api-v1/get-network-alerts-history/
+      // This one still seems to be /alerts/history and uses timespan.
+      const error = new Error(`API call to /organizations/${organizationId}/alerts?tsStart=${tsStart} failed with status ${response.status}`);
+      console.warn(`Endpoint de organización (/alerts) falló (status: ${response.status}), intentando con redes individuales... Error: ${error.message}`);
       const fallbackResult = await getAlertsFromNetworks(apiKey, organizationId, timespan);
       // Ensure fallbackResult has a clearly defined structure even on its own internal failures
       if (fallbackResult.success) {
@@ -400,8 +410,10 @@ export async function getAllHistoryAlerts(apiKey: string, organizationId: string
       const chunkSpecificErrors: typeof fetchErrors = [] // Errors specific to this chunk processing
 
       try {
+        // Using the new endpoint /alerts and parameters tsStart, tsEnd
+        // Documentation: https://developer.cisco.com/meraki/api-v1/get-organization-alerts/
         const response = await fetch(
-          `${MERAKI_API_BASE}/organizations/${organizationId}/alerts/history?t0=${t0}&t1=${t1}`,
+          `${MERAKI_API_BASE}/organizations/${organizationId}/alerts?tsStart=${t0}&tsEnd=${t1}`,
           {
             headers: { "X-Cisco-Meraki-API-Key": apiKey, "Content-Type": "application/json" },
           }
@@ -409,7 +421,7 @@ export async function getAllHistoryAlerts(apiKey: string, organizationId: string
 
         if (response.ok) {
           const alertsData = await response.json();
-          console.log(`Chunk ${chunkIndex + 1}: Successfully fetched ${alertsData.length} alerts for organization ${organizationId} (t0: ${t0}, t1: ${t1})`);
+          console.log(`Chunk ${chunkIndex + 1}: Successfully fetched ${alertsData.length} alerts for organization ${organizationId} (tsStart: ${t0}, tsEnd: ${t1}) with new endpoint /alerts`);
           const mappedAlerts: MerakiAlert[] = alertsData.map((alert: any, index: number) => {
             let id_var_name = alert.id || alert.alertId;
             if (!id_var_name) {
